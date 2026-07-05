@@ -12,7 +12,7 @@ server). Built to be run locally, broken, and rebuilt as a learning vehicle.
 | Input formats | Markdown / plain text | **PDF (incl. scanned+OCR), Word, Excel, Markdown** — tables kept intact, figures vision-captioned |
 | Chunking | Fixed-size or semantic | **Contextual retrieval** (LLM-augmented chunk context) |
 | Reranking | None or simple | **Cross-encoder reranker** (`bge-reranker-base`) |
-| Orchestration | Linear chain | **LangGraph state machine** with query rewrite + grader retry |
+| Orchestration | Linear chain | **Tool-calling agent** (LLM reasons + calls tools) or corrective-RAG pipeline — switchable |
 | LLM backend | One vendor, hard-coded | **Pluggable: Anthropic / Ollama / OpenAI-compatible**, with retry + fallback |
 | Generation | Single LLM call | Streaming + **strict citation prompt** + **post-hoc citation verification** |
 | Ingestion | Drop & rebuild | **Incremental** (content-hash manifest, resumable augmentation cache) |
@@ -158,6 +158,30 @@ with per-chunk scores, and citation markers that highlight their source card.
 A warning badge appears when citation verification finds orphaned references.
 It is **demo-grade** — dark theme, laptop-oriented, no mobile/accessibility work.
 
+## Orchestration modes
+
+Set `AGENT_MODE` to choose how a query is answered:
+
+- **`agent` (default) — tool-calling agentic RAG.** The LLM is given tools
+  (`search`, `lookup_fault_code`, `get_document_section`, `list_documents`) and
+  decides which to call, how many times, and when it has enough to answer. It
+  reasons over a multi-step loop, retrieval is an action the model chooses (not a
+  fixed step), and `[#n]` citations reference a running list of the sources it
+  actually pulled. The `/ask/stream` SSE trace shows each `tool_call`/`tool_result`
+  live, and `/ask` returns a `steps` array. **Requires a tool-capable model**:
+  any recent Claude, Ollama `llama3.1`+, or an OpenAI-compatible server that
+  supports `tools`. Tools live in [src/agent/tools.py](src/agent/tools.py); the
+  loop in [src/agent/loop.py](src/agent/loop.py).
+- **`pipeline` — corrective RAG (CRAG).** The original fixed LangGraph state
+  machine: rewrite → hybrid retrieve → LLM grader → conditional retry → generate.
+  No tool-calling; works with any text model. Kept for comparison and as a
+  fallback ([src/graph.py](src/graph.py)).
+
+Both modes share retrieval, guardrails, citation verification, observability,
+auth, and the chat UI; the [orchestrator](src/orchestrator.py) dispatches by mode.
+Agent mode's final answer is streamed as chunked tokens (genuine per-token
+streaming of an agent's tool-using final turn is a documented follow-up).
+
 ## Ingestion (multi-format, incremental)
 
 Drop `.pdf`, `.docx`, `.xlsx`, or `.md` files into `data/docs/` and run
@@ -232,8 +256,9 @@ them on every push/PR (`.github/workflows/ci.yml`).
 
 This round hardened the pipeline; it deliberately does **not** yet include:
 
-- **Agentic depth**: no tool-use/function-calling agent, no query routing/intent
-  classification, no multi-query decomposition, no conversation memory.
+- **Agentic depth**: the agent calls tools and does multi-step retrieval, but
+  there's still no conversation memory (single-turn), no query routing/intent
+  classification, and no long-horizon planning across turns.
 - **Answer self-check** beyond citation verification (no post-hoc faithfulness loop).
 - **Data layer**: multi-format ingestion covers PDF/scanned/Word/Excel/Markdown,
   but there are still no per-user retrieval ACLs and no document-revision/freshness

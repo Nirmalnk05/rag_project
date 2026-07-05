@@ -21,6 +21,8 @@
            font-size:11px; border:1px solid var(--border); margin-right:6px; }
   .badge.warn { color:var(--warn); border-color:var(--warn); }
   .cite { color:var(--accent); cursor:pointer; text-decoration:underline; }
+  .step { font-family:ui-monospace, monospace; font-size:11px; color:var(--accent);
+          margin:2px 0; }
   #sources { width:340px; border-left:1px solid var(--border); padding:12px;
              overflow-y:auto; background:var(--panel); }
   .src { border:1px solid var(--border); border-radius:8px; padding:8px;
@@ -128,6 +130,16 @@ $("f").addEventListener("submit", async (e) => {
       if (evt.type === "rewrite") meta.textContent = `rewritten: ${evt.rewritten}`;
       else if (evt.type === "grade")
         meta.textContent += ` · grade: ${evt.verdict}${evt.reason ? " ("+evt.reason+")" : ""}`;
+      else if (evt.type === "tool_call") {
+        const args = Object.entries(evt.args || {})
+          .map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(", ");
+        meta.appendChild(el("div", "step", `🔧 ${evt.tool}(${args})`));
+        t.scrollTop = t.scrollHeight;
+      }
+      else if (evt.type === "tool_result") {
+        const last = meta.querySelector(".step:last-child");
+        if (last) last.textContent += `  → ${evt.chars} chars`;
+      }
       else if (evt.type === "token") { bot.textContent += evt.text; t.scrollTop = t.scrollHeight; }
       else if (evt.type === "error") {
         bot.appendChild(el("div", "meta err",
