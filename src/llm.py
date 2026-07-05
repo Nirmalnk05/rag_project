@@ -1,53 +1,40 @@
-"""Thin Anthropic client wrapper with caching-friendly helpers."""
+"""Provider-neutral LLM helpers. Kept as a shim so existing imports work.
+
+complete()/stream_complete() are async; complete_sync() is for scripts
+(ingestion) that run outside an event loop.
+"""
 from __future__ import annotations
 
-from typing import AsyncIterator, Iterable
-
-from anthropic import Anthropic, AsyncAnthropic
+import asyncio
+from typing import AsyncIterator
 
 from src.config import get_settings
+from src.providers.base import LLMResult
+from src.providers.factory import get_provider
+from src.providers.retry import call_with_retries
 
 
-_settings = get_settings()
-_sync_client: Anthropic | None = None
-_async_client: AsyncAnthropic | None = None
-
-
-def sync_client() -> Anthropic:
-    global _sync_client
-    if _sync_client is None:
-        _sync_client = Anthropic(api_key=_settings.anthropic_api_key)
-    return _sync_client
-
-
-def async_client() -> AsyncAnthropic:
-    global _async_client
-    if _async_client is None:
-        _async_client = AsyncAnthropic(api_key=_settings.anthropic_api_key)
-    return _async_client
-
-
-def complete(
+async def complete(
     prompt: str,
     *,
     model: str | None = None,
     system: str | None = None,
     max_tokens: int = 1024,
     temperature: float = 0.0,
-) -> str:
-    """Sync single-turn completion. Used by graph nodes (rewriter, grader, contextual aug)."""
-    client = sync_client()
-    kwargs = {
-        "model": model or _settings.answer_model,
-        "max_tokens": max_tokens,
-        "temperature": temperature,
-        "messages": [{"role": "user", "content": prompt}],
-    }
-    if system:
-        kwargs["system"] = system
-    msg = client.messages.create(**kwargs)
-    # join all text blocks (usually one)
-    return "".join(b.text for b in msg.content if b.type == "text")
+) -> LLMResult:
+    s = get_settings()
+    provider = get_provider()
+    chosen = model or s.answer_model
+
+    async def make_call(override: str | None) -> LLMResult:
+        return await provider.complete(
+            prompt, system=system, model=override or chosen,
+            max_tokens=max_tokens, temperature=temperature,
+        )
+
+    return await call_with_retries(
+        make_call, max_attempts=s.llm_max_attempts, fallback_model=s.fallback_model
+    )
 
 
 async def stream_complete(
@@ -58,16 +45,16 @@ async def stream_complete(
     max_tokens: int = 2048,
     temperature: float = 0.0,
 ) -> AsyncIterator[str]:
-    """Async streaming completion. Yields text deltas. Used by the API for SSE."""
-    client = async_client()
-    kwargs = {
-        "model": model or _settings.answer_model,
-        "max_tokens": max_tokens,
-        "temperature": temperature,
-        "messages": [{"role": "user", "content": prompt}],
-    }
-    if system:
-        kwargs["system"] = system
-    async with client.messages.stream(**kwargs) as stream:
-        async for text in stream.text_stream:
-            yield text
+    """Streaming has no mid-stream retry (tokens already sent); failures
+    before/during the stream raise typed LLMError to the caller."""
+    s = get_settings()
+    provider = get_provider()
+    async for token in provider.stream(
+        prompt, system=system, model=model or s.answer_model,
+        max_tokens=max_tokens, temperature=temperature,
+    ):
+        yield token
+
+
+def complete_sync(prompt: str, **kwargs) -> LLMResult:
+    return asyncio.run(complete(prompt, **kwargs))
