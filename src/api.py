@@ -16,8 +16,8 @@ from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from src.config import get_settings
-from src.graph import build_state_graph, run_graph, stream_answer
 from src.guardrails import check_input, redact_pii
+from src.orchestrator import Orchestrator
 from src.observability import (
     get_tracer, log_event, request_id_var, reset_current_trace, set_current_trace,
     setup_logging,
@@ -37,9 +37,9 @@ async def lifespan(app: FastAPI):
     log_event(_logger, "startup_loading_retriever")
     from src.retrieval import Retriever
     app.state.retriever = await asyncio.to_thread(Retriever)
-    app.state.graph_full = build_state_graph(app.state.retriever)
-    app.state.graph_pre = build_state_graph(app.state.retriever, include_generate=False)
-    log_event(_logger, "startup_ready", provider=settings.llm_provider)
+    app.state.orchestrator = Orchestrator(app.state.retriever, settings=settings)
+    log_event(_logger, "startup_ready", provider=settings.llm_provider,
+              mode=settings.agent_mode)
     yield
 
 
@@ -81,6 +81,7 @@ class AskResponse(BaseModel):
     grade: str
     retrieval: list[dict]
     citations: dict
+    steps: list[dict]
     request_id: str
 
 
@@ -113,19 +114,20 @@ async def ask(req: AskRequest) -> AskResponse:
     trace = get_tracer().trace(name="ask", request_id=rid, input=req.query)
     tok = set_current_trace(trace)
     try:
-        state = await run_graph(app.state.graph_full, req.query, req.filters)
+        out = await app.state.orchestrator.run(req.query, req.filters)
     finally:
         reset_current_trace(tok)
-    answer = state.get("answer", "")
+    answer = out.get("answer", "")
     if settings.redact_pii_in_answers:
         answer, _found = redact_pii(answer)
     trace.end(output=answer)
     return AskResponse(
         query=req.query, answer=answer,
-        rewritten_query=state.get("rewritten", ""),
-        grade=state.get("grade", ""),
-        retrieval=state.get("retrieval", []),
-        citations=state.get("citations", {}),
+        rewritten_query=out.get("rewritten", ""),
+        grade=out.get("grade", ""),
+        retrieval=out.get("retrieval", []),
+        citations=out.get("citations", {}),
+        steps=out.get("steps", []),
         request_id=rid,
     )
 
@@ -140,7 +142,7 @@ async def ask_stream(req: AskRequest) -> StreamingResponse:
         trace = get_tracer().trace(name="ask_stream", request_id=rid, input=req.query)
         tok = set_current_trace(trace)
         try:
-            async for evt in stream_answer(app.state.graph_pre, req.query, req.filters):
+            async for evt in app.state.orchestrator.stream(req.query, req.filters):
                 if evt.get("type") == "final":
                     evt["request_id"] = rid
                 yield f"data: {json.dumps(evt)}\n\n"

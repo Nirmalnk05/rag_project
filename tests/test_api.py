@@ -29,9 +29,15 @@ GOOD_STATE = {
 @pytest.fixture
 def client(monkeypatch):
     _reset_buckets()
+    from src.config import Settings
+    from src.orchestrator import Orchestrator
     app.state.retriever = object()
-    app.state.graph_full = FakeGraph(GOOD_STATE)
-    app.state.graph_pre = FakeGraph({k: v for k, v in GOOD_STATE.items() if k != "answer"})
+    # pipeline mode with a fake compiled graph
+    app.state.orchestrator = Orchestrator(
+        object(), settings=Settings(_env_file=None, agent_mode="pipeline"),
+        graph_full=FakeGraph(GOOD_STATE),
+        graph_pre=FakeGraph({k: v for k, v in GOOD_STATE.items() if k != "answer"}),
+    )
 
     async def fake_stream(prompt, **kw):
         for t in ["An", "swer [#1]."]:

@@ -13,7 +13,6 @@ from pathlib import Path
 
 from datasets import Dataset
 
-from src.graph import run_sync
 from src.retrieval import Retriever
 
 
@@ -36,18 +35,23 @@ def run_eval() -> dict:
         faithfulness,
     )
 
+    import asyncio
+
+    from src.orchestrator import Orchestrator
+
     golden = load_golden()
     retriever = Retriever()
+    orchestrator = Orchestrator(retriever)  # honors AGENT_MODE (agent or pipeline)
 
     rows = []
     for i, item in enumerate(golden, 1):
         print(f"[eval] {i}/{len(golden)}: {item['question'][:60]}...")
-        state = run_sync(retriever, item["question"])
-        contexts = [r["text"] for r in state.get("retrieval", [])]
+        out = asyncio.run(orchestrator.run(item["question"]))
+        contexts = [r["text"] for r in out.get("retrieval", [])]
         rows.append(
             {
                 "user_input": item["question"],
-                "response": state.get("answer", ""),
+                "response": out.get("answer", ""),
                 "retrieved_contexts": contexts,
                 "reference": item["ground_truth"],
             }
