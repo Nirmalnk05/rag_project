@@ -17,12 +17,17 @@ def test_valid_key_passes_invalid_raises():
         check_api_key(provided=None, allowed={"k1"})
 
 
-def test_token_bucket_exhausts_and_refills():
-    b = TokenBucket(capacity=2, refill_per_s=1000)
+def test_token_bucket_exhausts():
+    b = TokenBucket(capacity=2, refill_per_s=0.0)  # no refill → deterministic
     assert b.allow() and b.allow() and not b.allow()
+
+
+def test_token_bucket_refills():
     import time
-    time.sleep(0.01)  # 1000/s refill → replenished
-    assert b.allow()
+    b = TokenBucket(capacity=1, refill_per_s=200)
+    assert b.allow()          # consume the only token
+    time.sleep(0.05)          # 200/s → ~10 tokens replenished
+    assert b.allow()          # refilled
 
 
 def test_check_rate_limit_429():

@@ -99,6 +99,11 @@ class Settings(BaseSettings):
                 "ANTHROPIC_API_KEY is required when LLM_PROVIDER=anthropic. "
                 "Set it in .env, or switch to a local provider: LLM_PROVIDER=ollama"
             )
+        if self.parse_backend == "cloud" and not self.cloud_parse_configured:
+            raise ValueError(
+                f"PARSE_BACKEND=cloud but no {self.cloud_parse_provider} credentials "
+                "are set. Configure the key, or use PARSE_BACKEND=local|hybrid."
+            )
 
 
 @lru_cache

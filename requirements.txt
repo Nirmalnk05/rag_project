@@ -16,6 +16,15 @@ qdrant-client==1.12.0
 sentence-transformers==3.2.1
 rank-bm25==0.2.2
 
+# Document parsing (multi-format ingestion)
+docling==2.8.3          # PDF (incl. scanned/OCR), Word — layout + tables
+pymupdf==1.24.10        # scanned-PDF text-density detection
+openpyxl==3.1.5         # Excel
+pandas==2.2.3           # tabular helpers
+# Optional cloud parsers (install as needed):
+#   llama-cloud-services   # LlamaParse   (CLOUD_PARSE_PROVIDER=llamaparse)
+#   azure-ai-documentintelligence  # Azure DI (CLOUD_PARSE_PROVIDER=azure)
+
 # Orchestration
 langgraph==0.2.39
 langchain-core==0.3.15

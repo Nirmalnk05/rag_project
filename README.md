@@ -9,6 +9,7 @@ server). Built to be run locally, broken, and rebuilt as a learning vehicle.
 | Concern | Pilot pattern | This system |
 |---|---|---|
 | Retrieval | Dense embeddings + FAISS | **Hybrid: BM25 + dense (Qdrant), fused via RRF, run in parallel** |
+| Input formats | Markdown / plain text | **PDF (incl. scanned+OCR), Word, Excel, Markdown** — tables kept intact, figures vision-captioned |
 | Chunking | Fixed-size or semantic | **Contextual retrieval** (LLM-augmented chunk context) |
 | Reranking | None or simple | **Cross-encoder reranker** (`bge-reranker-base`) |
 | Orchestration | Linear chain | **LangGraph state machine** with query rewrite + grader retry |
@@ -157,13 +158,36 @@ with per-chunk scores, and citation markers that highlight their source card.
 A warning badge appears when citation verification finds orphaned references.
 It is **demo-grade** — dark theme, laptop-oriented, no mobile/accessibility work.
 
-## Ingestion (incremental)
+## Ingestion (multi-format, incremental)
 
-`python scripts/ingest.py` only embeds new/changed chunks and deletes stale ones;
-`data/chunks.json` is the single source of truth (BM25 is rebuilt from it in memory
-at startup). Contextual-augmentation blurbs are cached by content hash, so an
-interrupted run resumes without repaying LLM calls. Use `--rebuild` to drop the
-collection and start clean, `--no-contextual` to skip the augmentation step.
+Drop `.pdf`, `.docx`, `.xlsx`, or `.md` files into `data/docs/` and run
+`python scripts/ingest.py`. A parsing layer (`src/parsing/`) normalizes every
+format into a stream of typed elements — **text, tables, figures** — which then
+flow through the existing chunking + indexing pipeline:
+
+- **PDF / Word** → Docling (layout-aware; built-in OCR for scanned pages).
+- **Excel** → each sheet becomes table chunks; large sheets are split by
+  row-group with the **header row repeated** so lookup matrices stay readable.
+- **Tables** become **atomic chunks** (never split mid-table).
+- **Figures/diagrams** are sent to a vision model (`VISION_MODEL`) for a
+  searchable caption; captions cache by image hash. Off by default until you set
+  a vision model — then wiring diagrams and HMI screens become retrievable.
+
+Parsing backend is controlled by `PARSE_BACKEND`:
+- `local` — Docling only, fully offline.
+- `hybrid` (default) — local first; documents that parse poorly (below
+  `CLOUD_PARSE_MIN_CHARS`) fall back to a cloud parser if one is configured.
+- `cloud` — always use the cloud parser (LlamaParse or Azure Document
+  Intelligence). Cloud deps are an optional install; no key → stays local.
+
+Ingestion is incremental: `data/chunks.json` is the single source of truth (BM25
+rebuilds from it in memory at startup); contextual blurbs and figure captions are
+cached by content hash, so an interrupted run resumes without repaying LLM/vision
+calls. Flags: `--rebuild` (drop + re-ingest), `--no-contextual` (skip
+augmentation), `--force-cloud` (route all PDF/Word to the cloud parser).
+
+Retrieval can filter by `element_type` (`text`/`table`/`figure`), `page`,
+`source_file`, `doc_title`, or `section` via the `filters` field on `/ask`.
 
 ## Security & guardrails
 
@@ -211,8 +235,9 @@ This round hardened the pipeline; it deliberately does **not** yet include:
 - **Agentic depth**: no tool-use/function-calling agent, no query routing/intent
   classification, no multi-query decomposition, no conversation memory.
 - **Answer self-check** beyond citation verification (no post-hoc faithfulness loop).
-- **Data layer**: Markdown only (no PDF/Word/OCR/tables); no per-user retrieval ACLs;
-  no document-revision/freshness model.
+- **Data layer**: multi-format ingestion covers PDF/scanned/Word/Excel/Markdown,
+  but there are still no per-user retrieval ACLs and no document-revision/freshness
+  model; engineering-drawing (CAD/P&ID) and email/ticket sources aren't parsed.
 - **Scale**: single-node Qdrant, in-process BM25 (~100k chunks), single-instance
   rate limiter (move to Redis for multi-replica); guardrails are heuristic
   (integration point for NeMo Guardrails / LlamaGuard).

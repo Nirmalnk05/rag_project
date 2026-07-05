@@ -19,7 +19,9 @@ from rank_bm25 import BM25Okapi
 from src.config import get_settings
 
 CHUNK_STORE_PATH = Path("data/chunks.json")
-ALLOWED_FILTER_KEYS = {"source_file", "doc_title", "section"}
+ALLOWED_FILTER_KEYS = {"source_file", "doc_title", "section", "element_type", "page"}
+# keys that live under chunk["metadata"] rather than at the top level
+METADATA_FILTER_KEYS = {"source_file", "element_type", "page"}
 
 
 @dataclass
@@ -57,8 +59,8 @@ def _matches_filters(chunk: dict, filters: dict | None) -> bool:
     if not filters:
         return True
     for k, v in filters.items():
-        actual = chunk.get("metadata", {}).get(k) if k == "source_file" else chunk.get(k)
-        if actual != v:
+        actual = chunk.get("metadata", {}).get(k) if k in METADATA_FILTER_KEYS else chunk.get(k)
+        if str(actual) != str(v):  # coerce so page (int) matches "2" (str)
             return False
     return True
 
@@ -121,7 +123,7 @@ class Retriever:
             from qdrant_client.models import FieldCondition, Filter, MatchValue
             conds = []
             for k, v in filters.items():
-                key = f"metadata.{k}" if k == "source_file" else k
+                key = f"metadata.{k}" if k in METADATA_FILTER_KEYS else k
                 conds.append(FieldCondition(key=key, match=MatchValue(value=v)))
             qfilter = Filter(must=conds)
 
