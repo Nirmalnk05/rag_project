@@ -37,8 +37,14 @@ class FigureCaptioner:
                  cache_path: Path = CAPTION_CACHE_PATH) -> None:
         self._s = settings or get_settings()
         self._provider = provider
-        self._cache = cache if cache is not None else {}
         self._cache_path = cache_path
+        if cache is not None:
+            self._cache = cache
+        elif cache_path is not None and Path(cache_path).exists():
+            with Path(cache_path).open("r", encoding="utf-8") as f:
+                self._cache = json.load(f)
+        else:
+            self._cache = {}
 
     @property
     def enabled(self) -> bool:

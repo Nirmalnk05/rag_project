@@ -1,29 +1,32 @@
-"""Ingestion pipeline: parse → chunk → contextually augment → dual-index.
+"""Ingestion pipeline: parse (any format) → chunk → contextually augment → index.
 
-Implements Anthropic's contextual retrieval pattern: each chunk gets a small
-LLM-generated context blurb prepended before embedding/indexing.
-
-Ingestion is incremental: a content-hash manifest lets unchanged chunks skip
-both LLM augmentation and re-embedding; stale chunks are deleted from Qdrant.
-data/chunks.json is the single source of truth (BM25 is rebuilt from it at
-Retriever startup — there is no separate BM25 artifact anymore).
+The front-end delegates to `src/parsing` (Dispatcher) to turn PDF/scanned/Word/
+Excel/Markdown into a normalized element stream. Elements are chunked by type:
+text is window-split, tables are kept atomic, figures become their vision caption.
+Everything then flows through the unchanged downstream: contextual augmentation,
+incremental manifest, deterministic uuid5 point IDs, Qdrant upsert, chunks.json.
 """
 from __future__ import annotations
 
 import hashlib
 import json
-import re
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from src.config import get_settings
+from src.parsing.dispatcher import SUPPORTED_EXT, Dispatcher
+from src.parsing.markdown_parser import _split_sections as _split_into_sections  # re-export
+from src.parsing.model import FigureElement, ParsedDocument, TableElement, TextElement
 
 _settings = get_settings()
 
 CHUNK_STORE_PATH = Path("data/chunks.json")
 MANIFEST_PATH = Path("data/ingest_manifest.json")
 CONTEXT_CACHE_PATH = Path("data/context_cache.json")
+
+__all__ = ["Chunk", "build_chunks", "run_ingestion", "_split_into_sections",
+           "_windowed_chunks", "chunk_content_hash", "diff_manifest", "point_id_for"]
 
 
 # ---------- data model ----------
@@ -33,9 +36,9 @@ class Chunk:
     id: str
     doc_id: str
     doc_title: str
-    text: str               # the raw chunk text (the part shown back to the LLM)
-    context: str            # the LLM-generated context blurb
-    embed_text: str         # the text that was actually embedded/indexed
+    text: str               # raw chunk text shown back to the LLM
+    context: str            # LLM-generated context blurb
+    embed_text: str         # text actually embedded/indexed
     section: str = ""
     metadata: dict = field(default_factory=dict)
 
@@ -43,37 +46,10 @@ class Chunk:
         return asdict(self)
 
 
-# ---------- parsing & chunking ----------
-
-def _read_doc(path: Path) -> tuple[str, str]:
-    """Return (title, body). Title comes from first H1 or filename."""
-    body = path.read_text(encoding="utf-8")
-    m = re.search(r"^#\s+(.+)$", body, flags=re.MULTILINE)
-    title = m.group(1).strip() if m else path.stem
-    return title, body
-
-
-def _split_into_sections(body: str) -> list[tuple[str, str]]:
-    """Split markdown by H2 headers; returns [(section_title, section_text), ...]."""
-    parts: list[tuple[str, str]] = []
-    current_title = "Preamble"
-    current_buf: list[str] = []
-    for line in body.splitlines():
-        h2 = re.match(r"^##\s+(.+)$", line)
-        if h2:
-            if current_buf:
-                parts.append((current_title, "\n".join(current_buf).strip()))
-            current_title = h2.group(1).strip()
-            current_buf = []
-        else:
-            current_buf.append(line)
-    if current_buf:
-        parts.append((current_title, "\n".join(current_buf).strip()))
-    return [(t, b) for t, b in parts if b]
-
+# ---------- chunking helpers ----------
 
 def _windowed_chunks(text: str, target: int = 600, overlap: int = 100) -> list[str]:
-    """Word-windowed chunking. Production would use a tokenizer; words are good enough here."""
+    """Word-windowed chunking. Production would use a tokenizer; words suffice here."""
     words = text.split()
     if len(words) <= target:
         return [text]
@@ -84,6 +60,30 @@ def _windowed_chunks(text: str, target: int = 600, overlap: int = 100) -> list[s
         if start + target >= len(words):
             break
     return out
+
+
+def _element_units(el) -> list[tuple[str, str, int | None]]:
+    """Turn one parsed element into (chunk_text, element_type, page) units."""
+    if isinstance(el, TextElement):
+        return [(w, "text", el.page) for w in _windowed_chunks(el.text)]
+    if isinstance(el, TableElement):
+        return [(el.markdown, "table", el.page)]           # atomic — never split
+    if isinstance(el, FigureElement):
+        return [(el.caption, "figure", el.page)] if el.caption.strip() else []
+    return []
+
+
+def _doc_text(parsed: ParsedDocument) -> str:
+    """Flatten a document for contextual-augmentation context."""
+    parts = []
+    for e in parsed.elements:
+        if isinstance(e, TextElement):
+            parts.append(e.text)
+        elif isinstance(e, TableElement):
+            parts.append(e.markdown)
+        elif isinstance(e, FigureElement):
+            parts.append(e.caption)
+    return "\n\n".join(p for p in parts if p)
 
 
 # ---------- contextual retrieval (Anthropic pattern) ----------
@@ -100,10 +100,9 @@ Here is the chunk we want to situate within the whole document:
 Give a short, 1–2 sentence context that situates this chunk within the document for the purposes of improving search retrieval of the chunk. Output only the context, nothing else."""
 
 
-def contextual_augment(doc_body: str, chunk_text: str) -> str:
+def contextual_augment(doc_text: str, chunk_text: str) -> str:
     """One small-LLM call per chunk (cache-checked by callers)."""
-    doc_snip = doc_body[:8000]
-    prompt = CONTEXT_AUG_PROMPT.format(doc=doc_snip, chunk=chunk_text)
+    prompt = CONTEXT_AUG_PROMPT.format(doc=doc_text[:8000], chunk=chunk_text)
     from src.llm import complete_sync
     return complete_sync(
         prompt, model=_settings.context_aug_model, max_tokens=120, temperature=0.0
@@ -146,36 +145,43 @@ def _save_json(path: Path, obj) -> None:
         json.dump(obj, f, ensure_ascii=False, indent=2)
 
 
-# ---------- chunk building (augmentation cache-aware) ----------
+# ---------- chunk building ----------
 
 def build_chunks(docs_dir: Path, use_contextual: bool = True,
-                 context_cache: dict[str, str] | None = None) -> list[Chunk]:
+                 context_cache: dict[str, str] | None = None,
+                 dispatcher: Dispatcher | None = None,
+                 force_cloud: bool = False) -> list[Chunk]:
     context_cache = context_cache if context_cache is not None else {}
-    chunks: list[Chunk] = []
-    files = sorted(docs_dir.glob("*.md"))
+    dispatcher = dispatcher or Dispatcher()
+    files = sorted(p for p in docs_dir.iterdir()
+                   if p.is_file() and p.suffix.lower() in SUPPORTED_EXT)
     if not files:
-        raise FileNotFoundError(f"No .md files in {docs_dir}")
+        raise FileNotFoundError(f"No supported documents in {docs_dir} "
+                                f"(supported: {sorted(SUPPORTED_EXT)})")
+    chunks: list[Chunk] = []
     for path in files:
-        title, body = _read_doc(path)
+        parsed = dispatcher.parse(path, force_cloud=force_cloud)
+        doc_text = _doc_text(parsed)
         doc_id = _hash_id(path.name)
-        for section_title, section_body in _split_into_sections(body):
-            for raw in _windowed_chunks(section_body):
+        for el in parsed.elements:
+            for raw, element_type, page in _element_units(el):
                 ctx = ""
                 if use_contextual:
-                    key = chunk_content_hash(title, section_title, raw)
+                    key = chunk_content_hash(parsed.title, el.section, raw)
                     if key in context_cache:
                         ctx = context_cache[key]
                     else:
-                        print(f"  augmenting chunk in '{section_title}'...", flush=True)
-                        ctx = contextual_augment(body, raw)
+                        print(f"  augmenting {element_type} in '{el.section}'...", flush=True)
+                        ctx = contextual_augment(doc_text, raw)
                         context_cache[key] = ctx
                         _save_json(CONTEXT_CACHE_PATH, context_cache)  # resumable
                 embed_text = f"{ctx}\n\n{raw}" if ctx else raw
                 chunks.append(Chunk(
-                    id=_hash_id(doc_id, section_title, raw[:200]),
-                    doc_id=doc_id, doc_title=title, text=raw, context=ctx,
-                    embed_text=embed_text, section=section_title,
-                    metadata={"source_file": path.name},
+                    id=_hash_id(doc_id, el.section, element_type, raw[:200]),
+                    doc_id=doc_id, doc_title=parsed.title, text=raw, context=ctx,
+                    embed_text=embed_text, section=el.section,
+                    metadata={"source_file": path.name,
+                              "element_type": element_type, "page": page},
                 ))
     return chunks
 
@@ -227,12 +233,14 @@ def index_qdrant_incremental(chunks: list[Chunk], embedder, *,
 # ---------- entry point ----------
 
 def run_ingestion(docs_dir: Path = Path("data/docs"), use_contextual: bool = True,
-                  rebuild: bool = False) -> None:
-    print(f"[ingest] building chunks from {docs_dir} (contextual={use_contextual}, rebuild={rebuild})")
+                  rebuild: bool = False, force_cloud: bool = False) -> None:
+    print(f"[ingest] parsing documents in {docs_dir} "
+          f"(contextual={use_contextual}, rebuild={rebuild}, force_cloud={force_cloud})")
     context_cache = {} if rebuild else _load_json(CONTEXT_CACHE_PATH, {})
     previous_manifest = {} if rebuild else _load_json(MANIFEST_PATH, {})
 
-    chunks = build_chunks(docs_dir, use_contextual=use_contextual, context_cache=context_cache)
+    chunks = build_chunks(docs_dir, use_contextual=use_contextual,
+                          context_cache=context_cache, force_cloud=force_cloud)
     current_manifest = {
         c.id: chunk_content_hash(c.doc_title, c.section, c.text) for c in chunks
     }
