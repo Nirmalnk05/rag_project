@@ -1,6 +1,7 @@
 """Anthropic provider. System prompts get cache_control for prompt caching."""
 from __future__ import annotations
 
+import base64
 from typing import Any, AsyncIterator
 
 import anthropic
@@ -68,3 +69,20 @@ class AnthropicProvider(LLMProvider):
             raise
         except Exception as e:  # noqa: BLE001
             raise self._map_error(e) from e
+
+    async def caption(self, *, image, media_type, prompt, model, max_tokens=512) -> str:
+        content = [
+            {"type": "image", "source": {
+                "type": "base64", "media_type": media_type,
+                "data": base64.b64encode(image).decode(),
+            }},
+            {"type": "text", "text": prompt},
+        ]
+        try:
+            msg = await self._client.messages.create(
+                model=model, max_tokens=max_tokens,
+                messages=[{"role": "user", "content": content}],
+            )
+        except Exception as e:  # noqa: BLE001
+            raise self._map_error(e) from e
+        return "".join(b.text for b in msg.content if b.type == "text")

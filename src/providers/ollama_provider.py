@@ -1,6 +1,7 @@
 """Ollama native /api/chat provider (no SDK; httpx only)."""
 from __future__ import annotations
 
+import base64
 import json
 from typing import AsyncIterator
 
@@ -76,3 +77,21 @@ class OllamaProvider(LLMProvider):
                         break
         except httpx.HTTPError as e:
             raise LLMRetryableError(f"ollama transport error: {e}") from e
+
+    async def caption(self, *, image, media_type, prompt, model, max_tokens=512) -> str:
+        body = {
+            "model": model,
+            "messages": [{
+                "role": "user", "content": prompt,
+                "images": [base64.b64encode(image).decode()],
+            }],
+            "stream": False,
+            "options": {"temperature": 0.0, "num_predict": max_tokens},
+        }
+        try:
+            resp = await self._client.post("/api/chat", json=body)
+        except httpx.HTTPError as e:
+            raise LLMRetryableError(f"ollama transport error: {e}") from e
+        if resp.status_code != 200:
+            raise _map_status(resp.status_code, resp.text)
+        return resp.json().get("message", {}).get("content", "")

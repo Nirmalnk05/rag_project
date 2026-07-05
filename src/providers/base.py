@@ -44,3 +44,16 @@ class LLMProvider(ABC):
         max_tokens: int = 2048,
         temperature: float = 0.0,
     ) -> AsyncIterator[str]: ...
+
+    async def caption(
+        self,
+        *,
+        image: bytes,
+        media_type: str,
+        prompt: str,
+        model: str,
+        max_tokens: int = 512,
+    ) -> str:
+        """Describe an image with a vision model. Providers that support vision
+        override this; the default signals it is unavailable."""
+        raise LLMError("vision captioning is not supported by this provider")

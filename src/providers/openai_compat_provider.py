@@ -1,6 +1,7 @@
 """OpenAI-compatible /v1/chat/completions provider (vLLM, LM Studio, OpenAI...)."""
 from __future__ import annotations
 
+import base64
 import json
 from typing import AsyncIterator
 
@@ -80,3 +81,21 @@ class OpenAICompatProvider(LLMProvider):
                         yield frag
         except httpx.HTTPError as e:
             raise LLMRetryableError(f"openai-compat transport error: {e}") from e
+
+    async def caption(self, *, image, media_type, prompt, model, max_tokens=512) -> str:
+        data_url = f"data:{media_type};base64,{base64.b64encode(image).decode()}"
+        body = {
+            "model": model, "max_tokens": max_tokens, "temperature": 0.0,
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": data_url}},
+            ]}],
+        }
+        try:
+            resp = await self._client.post("chat/completions", json=body)
+        except httpx.HTTPError as e:
+            raise LLMRetryableError(f"openai-compat transport error: {e}") from e
+        if resp.status_code != 200:
+            raise _map_status(resp.status_code, resp.text)
+        data = resp.json()
+        return (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
