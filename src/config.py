@@ -53,6 +53,10 @@ class Settings(BaseSettings):
     # Guardrails
     redact_pii_in_answers: bool = False
 
+    # Figure captioning (vision)
+    enable_figure_caption: bool = True
+    vision_model: str = ""  # e.g. a Claude vision model, or "llama3.2-vision"
+
     # Tracing (optional)
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""
