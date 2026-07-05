@@ -53,6 +53,11 @@ class Settings(BaseSettings):
     # Guardrails
     redact_pii_in_answers: bool = False
 
+    # Agent (tool-calling)
+    agent_mode: str = "agent"              # agent | pipeline
+    agent_max_steps: int = 6
+    agent_max_tool_results_chars: int = 4000
+
     # Figure captioning (vision)
     enable_figure_caption: bool = True
     vision_model: str = ""  # e.g. a Claude vision model, or "llama3.2-vision"
