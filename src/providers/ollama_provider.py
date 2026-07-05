@@ -8,9 +8,28 @@ from typing import AsyncIterator
 import httpx
 
 from src.config import Settings
-from src.providers.base import LLMError, LLMProvider, LLMResult, LLMRetryableError
+from src.providers.base import (
+    ChatResult, LLMError, LLMProvider, LLMResult, LLMRetryableError, ToolCall, ToolSpec,
+)
 
 _RETRYABLE_STATUS = {408, 429, 500, 502, 503, 504}
+
+
+def _to_ollama_messages(messages: list[dict]) -> list[dict]:
+    out: list[dict] = []
+    for m in messages:
+        role = m["role"]
+        if role == "assistant" and m.get("tool_calls"):
+            out.append({
+                "role": "assistant", "content": m.get("content") or "",
+                "tool_calls": [{"function": {"name": tc.name, "arguments": tc.arguments}}
+                               for tc in m["tool_calls"]],
+            })
+        elif role == "tool":
+            out.append({"role": "tool", "content": m["content"]})
+        else:
+            out.append({"role": role, "content": m["content"]})
+    return out
 
 
 def _messages(prompt: str, system: str | None) -> list[dict]:
@@ -95,3 +114,37 @@ class OllamaProvider(LLMProvider):
         if resp.status_code != 200:
             raise _map_status(resp.status_code, resp.text)
         return resp.json().get("message", {}).get("content", "")
+
+    async def chat(self, messages, *, tools=None, model, max_tokens=1024, temperature=0.0) -> ChatResult:
+        body: dict = {
+            "model": model, "messages": _to_ollama_messages(messages), "stream": False,
+            "options": {"temperature": temperature, "num_predict": max_tokens},
+        }
+        if tools:
+            body["tools"] = [{"type": "function", "function": {
+                "name": t.name, "description": t.description, "parameters": t.parameters,
+            }} for t in tools]
+        try:
+            resp = await self._client.post("/api/chat", json=body)
+        except httpx.HTTPError as e:
+            raise LLMRetryableError(f"ollama transport error: {e}") from e
+        if resp.status_code != 200:
+            raise _map_status(resp.status_code, resp.text)
+        data = resp.json()
+        message = data.get("message", {})
+        calls = []
+        for i, tc in enumerate(message.get("tool_calls") or []):
+            fn = tc.get("function", {})
+            args = fn.get("arguments") or {}
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except json.JSONDecodeError:
+                    args = {}
+            calls.append(ToolCall(id=f"call_{i}", name=fn.get("name", ""), arguments=args))
+        return ChatResult(
+            text=message.get("content") or "", tool_calls=calls,
+            stop_reason=data.get("done_reason", ""), model=model,
+            input_tokens=data.get("prompt_eval_count", 0),
+            output_tokens=data.get("eval_count", 0),
+        )

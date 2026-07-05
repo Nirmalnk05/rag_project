@@ -8,9 +8,31 @@ from typing import AsyncIterator
 import httpx
 
 from src.config import Settings
-from src.providers.base import LLMError, LLMProvider, LLMResult, LLMRetryableError
+from src.providers.base import (
+    ChatResult, LLMError, LLMProvider, LLMResult, LLMRetryableError, ToolCall, ToolSpec,
+)
 
 _RETRYABLE_STATUS = {408, 429, 500, 502, 503, 504}
+
+
+def _to_openai_messages(messages: list[dict]) -> list[dict]:
+    out: list[dict] = []
+    for m in messages:
+        role = m["role"]
+        if role == "assistant" and m.get("tool_calls"):
+            out.append({
+                "role": "assistant", "content": m.get("content") or None,
+                "tool_calls": [{
+                    "id": tc.id, "type": "function",
+                    "function": {"name": tc.name, "arguments": json.dumps(tc.arguments)},
+                } for tc in m["tool_calls"]],
+            })
+        elif role == "tool":
+            out.append({"role": "tool", "tool_call_id": m["tool_call_id"],
+                        "content": m["content"]})
+        else:
+            out.append({"role": role, "content": m["content"]})
+    return out
 
 
 def _map_status(status: int, body: str) -> LLMError:
@@ -99,3 +121,37 @@ class OpenAICompatProvider(LLMProvider):
             raise _map_status(resp.status_code, resp.text)
         data = resp.json()
         return (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
+
+    async def chat(self, messages, *, tools=None, model, max_tokens=1024, temperature=0.0) -> ChatResult:
+        body: dict = {
+            "model": model, "messages": _to_openai_messages(messages),
+            "max_tokens": max_tokens, "temperature": temperature,
+        }
+        if tools:
+            body["tools"] = [{"type": "function", "function": {
+                "name": t.name, "description": t.description, "parameters": t.parameters,
+            }} for t in tools]
+        try:
+            resp = await self._client.post("chat/completions", json=body)
+        except httpx.HTTPError as e:
+            raise LLMRetryableError(f"openai-compat transport error: {e}") from e
+        if resp.status_code != 200:
+            raise _map_status(resp.status_code, resp.text)
+        data = resp.json()
+        choice = (data.get("choices") or [{}])[0]
+        message = choice.get("message", {})
+        calls = []
+        for tc in message.get("tool_calls") or []:
+            fn = tc.get("function", {})
+            try:
+                args = json.loads(fn.get("arguments") or "{}")
+            except json.JSONDecodeError:
+                args = {}
+            calls.append(ToolCall(id=tc.get("id", ""), name=fn.get("name", ""), arguments=args))
+        usage = data.get("usage") or {}
+        return ChatResult(
+            text=message.get("content") or "", tool_calls=calls,
+            stop_reason=choice.get("finish_reason", ""), model=data.get("model", model),
+            input_tokens=usage.get("prompt_tokens", 0),
+            output_tokens=usage.get("completion_tokens", 0),
+        )
