@@ -1,1 +1,148 @@
-<!doctype html><html><body>chat ui placeholder</body></html>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Production RAG — Chat</title>
+<style>
+  :root { --bg:#0f1115; --panel:#181b22; --border:#2a2f3a; --text:#e6e6e6;
+          --dim:#8a93a5; --accent:#4f9cf9; --warn:#e0a030; --err:#e05555; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font:14px/1.5 system-ui, sans-serif; display:flex; height:100vh; }
+  #main { flex:1; display:flex; flex-direction:column; max-width:820px;
+          margin:0 auto; padding:16px; }
+  #transcript { flex:1; overflow-y:auto; padding-bottom:12px; }
+  .msg { margin:10px 0; padding:10px 14px; border-radius:10px; white-space:pre-wrap; }
+  .user { background:#243040; align-self:flex-end; }
+  .bot  { background:var(--panel); border:1px solid var(--border); }
+  .meta { color:var(--dim); font-size:12px; margin:4px 0; }
+  .err  { color:var(--err); }
+  .badge { display:inline-block; padding:1px 8px; border-radius:8px;
+           font-size:11px; border:1px solid var(--border); margin-right:6px; }
+  .badge.warn { color:var(--warn); border-color:var(--warn); }
+  .cite { color:var(--accent); cursor:pointer; text-decoration:underline; }
+  #sources { width:340px; border-left:1px solid var(--border); padding:12px;
+             overflow-y:auto; background:var(--panel); }
+  .src { border:1px solid var(--border); border-radius:8px; padding:8px;
+         margin-bottom:8px; font-size:12px; }
+  .src.hl { border-color:var(--accent); }
+  .src h4 { margin:0 0 4px; font-size:12px; color:var(--accent); }
+  form { display:flex; gap:8px; margin-top:8px; }
+  input, button { background:#12151c; color:var(--text);
+                  border:1px solid var(--border); border-radius:8px; padding:9px 12px; }
+  input#q { flex:1; }
+  button { cursor:pointer; } button:hover { border-color:var(--accent); }
+  #cfg { display:flex; gap:8px; margin-bottom:8px; }
+  #cfg input { font-size:12px; flex:1; }
+</style>
+</head>
+<body>
+<div id="main">
+  <div id="cfg">
+    <input id="apikey" placeholder="X-API-Key (if auth enabled)">
+    <input id="ftitle" placeholder="filter: doc_title (optional)">
+  </div>
+  <div id="transcript"></div>
+  <form id="f">
+    <input id="q" placeholder="Ask a maintenance question…" autocomplete="off">
+    <button>Send</button>
+  </form>
+</div>
+<div id="sources"><div class="meta">Sources appear here per answer.</div></div>
+<script>
+const $ = (id) => document.getElementById(id);
+$("apikey").value = localStorage.getItem("rag_api_key") || "";
+$("apikey").addEventListener("change", e => localStorage.setItem("rag_api_key", e.target.value));
+
+function el(tag, cls, text) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined) n.textContent = text;
+  return n;
+}
+
+function renderSources(retrieval) {
+  const box = $("sources"); box.innerHTML = "";
+  retrieval.forEach((r, i) => {
+    const card = el("div", "src"); card.id = "src-" + (i + 1);
+    card.appendChild(el("h4", "", `[#${i+1}] ${r.doc_title} › ${r.section}`));
+    card.appendChild(el("div", "meta", `score ${r.score.toFixed(3)} · ${r.source}`));
+    card.appendChild(el("div", "", r.text.slice(0, 400)));
+    box.appendChild(card);
+  });
+}
+
+function linkCitations(node) {
+  node.innerHTML = node.textContent.replace(/\[#(\d+)\]/g,
+    '<span class="cite" data-n="$1">[#$1]</span>');
+  node.querySelectorAll(".cite").forEach(c => c.onclick = () => {
+    document.querySelectorAll(".src").forEach(s => s.classList.remove("hl"));
+    const t = $("src-" + c.dataset.n);
+    if (t) { t.classList.add("hl"); t.scrollIntoView({behavior:"smooth"}); }
+  });
+}
+
+$("f").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const q = $("q").value.trim(); if (!q) return;
+  $("q").value = "";
+  const t = $("transcript");
+  t.appendChild(el("div", "msg user", q));
+  const meta = t.appendChild(el("div", "meta", "…"));
+  const bot = t.appendChild(el("div", "msg bot", ""));
+  t.scrollTop = t.scrollHeight;
+
+  const headers = {"Content-Type": "application/json"};
+  const key = $("apikey").value.trim();
+  if (key) headers["X-API-Key"] = key;
+  const filters = $("ftitle").value.trim()
+    ? {doc_title: $("ftitle").value.trim()} : null;
+
+  let resp;
+  try {
+    resp = await fetch("/ask/stream", {method: "POST", headers,
+      body: JSON.stringify({query: q, filters})});
+  } catch (err) {
+    meta.textContent = "network error"; meta.classList.add("err"); return;
+  }
+  if (!resp.ok) {
+    const body = await resp.text();
+    meta.textContent = `HTTP ${resp.status}: ${body.slice(0, 300)}`;
+    meta.classList.add("err"); return;
+  }
+
+  const reader = resp.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  while (true) {
+    const {done, value} = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, {stream: true});
+    let idx;
+    while ((idx = buf.indexOf("\n\n")) >= 0) {
+      const line = buf.slice(0, idx).trim(); buf = buf.slice(idx + 2);
+      if (!line.startsWith("data: ")) continue;
+      const payload = line.slice(6);
+      if (payload === "[DONE]") continue;
+      const evt = JSON.parse(payload);
+      if (evt.type === "rewrite") meta.textContent = `rewritten: ${evt.rewritten}`;
+      else if (evt.type === "grade")
+        meta.textContent += ` · grade: ${evt.verdict}${evt.reason ? " ("+evt.reason+")" : ""}`;
+      else if (evt.type === "token") { bot.textContent += evt.text; t.scrollTop = t.scrollHeight; }
+      else if (evt.type === "error") {
+        bot.appendChild(el("div", "meta err",
+          `error: ${evt.message} (request ${evt.request_id})`));
+      } else if (evt.type === "final") {
+        renderSources(evt.retrieval); linkCitations(bot);
+        const badges = el("div", "meta");
+        if (evt.citations && !evt.citations.valid)
+          badges.appendChild(el("span", "badge warn", "citations: check"));
+        if (evt.request_id) badges.appendChild(el("span", "badge", "req " + evt.request_id));
+        bot.after(badges);
+      }
+    }
+  }
+});
+</script>
+</body>
+</html>

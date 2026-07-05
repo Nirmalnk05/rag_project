@@ -12,10 +12,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
 def test_config_loads():
-    """Config should load if ANTHROPIC_API_KEY is set."""
-    import os
-    if not os.getenv("ANTHROPIC_API_KEY"):
-        os.environ["ANTHROPIC_API_KEY"] = "test-key"  # bypass for import test
+    """Config loads with no keys set (Anthropic key is only required at
+    startup when LLM_PROVIDER=anthropic, not at import)."""
     from src.config import get_settings
     s = get_settings()
     assert s.embed_model
@@ -28,16 +26,10 @@ def test_graph_imports():
 
 
 def test_retrieval_imports():
-    import os
-    if not os.getenv("ANTHROPIC_API_KEY"):
-        os.environ["ANTHROPIC_API_KEY"] = "test-key"
     from src.retrieval import Retriever, Retrieved  # noqa: F401
 
 
 def test_ingestion_imports():
-    import os
-    if not os.getenv("ANTHROPIC_API_KEY"):
-        os.environ["ANTHROPIC_API_KEY"] = "test-key"
     from src.ingestion import run_ingestion, Chunk  # noqa: F401
 
 

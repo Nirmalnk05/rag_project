@@ -5,7 +5,32 @@
       "Bash(python -c \"import pytest\")",
       "Bash(git init *)",
       "Bash(git add *)",
-      "Bash(git commit *)"
+      "Bash(git commit *)",
+      "Bash(pip install *)",
+      "Bash(python -c \"import pytest, pytest_asyncio, httpx; print\\('dev deps ok'\\)\")",
+      "Bash(python -c ' *)",
+      "Bash(echo \"exit: $?\")",
+      "Bash(ANTHROPIC_API_KEY=test-key python -m pytest tests/ -q)",
+      "Bash(python -m pytest tests/test_config.py -q)",
+      "Bash(git commit -q -m 'feat: provider-aware config with startup validation *)",
+      "Bash(python -m pytest tests/test_retry.py -q)",
+      "Bash(python -m pytest tests/test_provider_anthropic.py -q)",
+      "Bash(python -m pytest tests/test_provider_ollama.py -q)",
+      "Bash(python -m pytest tests/test_provider_openai_compat.py -q)",
+      "Bash(python -m pytest tests/test_llm_shim.py -q)",
+      "Bash(git commit -q -m 'feat: LLM provider layer \\(anthropic/ollama/openai-compat\\) with retry, factory, async shim *)",
+      "Bash(git config *)",
+      "Bash(python -m pytest tests/test_observability.py -q)",
+      "Bash(python -m pytest tests/test_guardrails.py -q)",
+      "Bash(python -m pytest tests/test_citations.py tests/test_security.py -q)",
+      "Bash(git commit -q -m 'feat: observability \\(json logs+langfuse\\), guardrails, citation verification, auth+rate limiting *)",
+      "Bash(python -m pytest tests/test_retrieval_unit.py -q)",
+      "Bash(python -m pytest tests/test_ingestion_unit.py -q)",
+      "Bash(python -m pytest tests/test_graph_unit.py -q)",
+      "Bash(python -m pytest tests/test_api.py -q)",
+      "Bash(python -m pytest tests/ -q)",
+      "Bash(git commit -q -m 'refactor: async pipeline — hybrid retrieval, incremental ingestion, async graph, hardened API *)",
+      "Bash(git commit -q -m 'feat: chat UI, Dockerfile+compose app service, CI workflow, truthful README, env template *)"
     ]
   }
 }

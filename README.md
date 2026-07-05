@@ -1,40 +1,48 @@
 # Production-Grade RAG — Reference Implementation
 
-A reference RAG system that goes beyond the "FAISS + LLM" pilot pattern. Built to be run locally, broken, and rebuilt as a learning vehicle.
+A reference agentic RAG system that goes beyond the "FAISS + LLM" pilot pattern.
+Runs on **Claude (Anthropic) or a fully local LLM** (Ollama / any OpenAI-compatible
+server). Built to be run locally, broken, and rebuilt as a learning vehicle.
 
 ## What makes it "production-grade"
 
 | Concern | Pilot pattern | This system |
 |---|---|---|
-| Retrieval | Dense embeddings + FAISS | **Hybrid: BM25 + dense (Qdrant), fused via RRF** |
+| Retrieval | Dense embeddings + FAISS | **Hybrid: BM25 + dense (Qdrant), fused via RRF, run in parallel** |
 | Chunking | Fixed-size or semantic | **Contextual retrieval** (LLM-augmented chunk context) |
 | Reranking | None or simple | **Cross-encoder reranker** (`bge-reranker-base`) |
 | Orchestration | Linear chain | **LangGraph state machine** with query rewrite + grader retry |
-| Generation | Single LLM call | Streaming + **strict citation prompt** + faithfulness check |
+| LLM backend | One vendor, hard-coded | **Pluggable: Anthropic / Ollama / OpenAI-compatible**, with retry + fallback |
+| Generation | Single LLM call | Streaming + **strict citation prompt** + **post-hoc citation verification** |
+| Ingestion | Drop & rebuild | **Incremental** (content-hash manifest, resumable augmentation cache) |
+| Guardrails | None | **Prompt-injection screening** (input + retrieved chunks) + **PII redaction** |
+| Security | Open endpoint | **API-key auth + token-bucket rate limiting** |
 | Evaluation | ROUGE / manual | **RAGAS** (faithfulness, answer relevancy, context precision/recall) |
-| Observability | Print statements | **Langfuse tracing** (optional, env-gated) |
-| Serving | Streamlit prototype | **FastAPI + Server-Sent Events** streaming |
+| Observability | Print statements | **JSON logs + request IDs + Langfuse tracing** (wired, env-gated) |
+| Serving | Streamlit prototype | **FastAPI + SSE streaming + minimal chat UI** |
 
 ## Architecture
 
 ```
-                 ┌──────────────┐
-   User query ──▶│ FastAPI /ask │
-                 └──────┬───────┘
-                        ▼
+                 ┌──────────────────────────┐
+   User query ──▶│ FastAPI  /  · /ask · /ask/stream
+                 │ (auth · rate limit · request-id · guardrail)
+                 └──────────────┬───────────┘
+                                ▼
         ┌───────── LangGraph orchestrator ──────────┐
         │                                            │
         │   ┌─────────────────────────────┐          │
-        │   │ Query rewrite + decompose   │◀──┐      │
+        │   │ Query rewrite               │◀──┐      │
         │   └──────────────┬──────────────┘   │      │
         │                  ▼                  │      │
-        │   ┌──────────┐  ┌──────────┐       │      │
-        │   │ BM25     │  │ Qdrant   │  (parallel)   │
+        │   ┌──────────┐  ┌──────────┐  (parallel)   │
+        │   │ BM25     │  │ Qdrant   │       │      │
         │   └────┬─────┘  └────┬─────┘       │      │
         │        └────┬────────┘             │      │
         │             ▼                      │      │
         │   ┌─────────────────────────────┐  │      │
-        │   │ RRF fusion + cross-encoder  │  │      │
+        │   │ RRF fusion → cross-encoder  │  │      │
+        │   │ → injection screen          │  │      │
         │   └──────────────┬──────────────┘  │      │
         │                  ▼                  │      │
         │   ┌─────────────────────────────┐  │      │
@@ -43,33 +51,43 @@ A reference RAG system that goes beyond the "FAISS + LLM" pilot pattern. Built t
         │   └──────────────┬──────────────┘         │
         └──────────────────┼──────────────────────────┘
                            ▼
-                 ┌────────────────────┐
-                 │ Claude w/ citations│──▶ SSE stream
-                 └────────────────────┘
+                 ┌────────────────────────┐
+                 │ LLM w/ citations       │──▶ SSE stream
+                 │ → citation verification│    → Chat UI
+                 └────────────────────────┘
 ```
 
-Cross-cutting: Langfuse traces, RAGAS eval in CI, PII/safety guardrails.
+Cross-cutting: JSON logs + request IDs, Langfuse traces (env-gated), RAGAS eval,
+guardrails, API-key auth + rate limiting.
 
 ## Project layout
 
 ```
 production-rag/
 ├── src/
-│   ├── config.py         # env config
-│   ├── ingestion.py      # parse, contextual chunking, index
-│   ├── retrieval.py      # hybrid retrieval + reranker
-│   ├── graph.py          # LangGraph agentic flow
-│   ├── llm.py            # Anthropic client wrapper
-│   ├── api.py            # FastAPI + SSE streaming
-│   └── eval_runner.py    # RAGAS evaluation
-├── data/docs/            # sample maintenance documents
-├── eval/golden_set.json  # eval Q/A pairs
-├── scripts/
-│   ├── ingest.py
-│   └── run_eval.py
-├── docker-compose.yml    # Qdrant
-├── requirements.txt
-└── .env.example
+│   ├── config.py           # env config + provider validation
+│   ├── providers/          # LLM providers: anthropic, ollama, openai-compat
+│   │   ├── base.py         #   interface + typed errors + LLMResult
+│   │   ├── retry.py        #   backoff/timeout/fallback wrapper
+│   │   └── factory.py      #   provider selection
+│   ├── llm.py              # async complete()/stream_complete() shim
+│   ├── ingestion.py        # parse, contextual chunking, incremental index
+│   ├── retrieval.py        # hybrid retrieval + reranker + filters
+│   ├── graph.py            # LangGraph agentic flow (async)
+│   ├── guardrails.py       # injection screening + PII redaction
+│   ├── citations.py        # post-generation citation verification
+│   ├── security.py         # API-key auth + rate limiting
+│   ├── observability.py    # JSON logs, request IDs, Langfuse
+│   ├── api.py              # FastAPI + SSE streaming
+│   ├── static/index.html   # minimal chat UI
+│   └── eval_runner.py      # RAGAS evaluation
+├── data/docs/              # sample maintenance documents
+├── eval/golden_set.json    # eval Q/A pairs
+├── scripts/{ingest,run_eval}.py
+├── tests/                  # unit tests (mocked LLM/Qdrant/httpx)
+├── Dockerfile · docker-compose.yml
+├── .github/workflows/ci.yml
+└── requirements.txt · requirements-dev.txt · .env.example
 ```
 
 ## Quickstart
@@ -77,73 +95,131 @@ production-rag/
 ### 1. Setup
 
 ```bash
-git clone <this repo>
-cd production-rag
-python -m venv .venv && source .venv/bin/activate
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-
 cp .env.example .env
-# edit .env and add ANTHROPIC_API_KEY
 ```
 
 ### 2. Start Qdrant
 
 ```bash
-docker compose up -d
-# Qdrant UI at http://localhost:6333/dashboard
+docker compose up -d qdrant     # Qdrant UI at http://localhost:6333/dashboard
 ```
 
-### 3. Ingest sample documents
+### 3a. Run with Claude (Anthropic)
 
 ```bash
+# .env: LLM_PROVIDER=anthropic  ANTHROPIC_API_KEY=sk-ant-...
 python scripts/ingest.py
-# Watch: parsing → contextual augmentation → dual indexing
-```
-
-### 4. Run the API
-
-```bash
 uvicorn src.api:app --reload --port 8000
 ```
 
-Try a query:
+### 3b. Run with a local LLM (Ollama) — no API key, fully offline
 
 ```bash
-curl -N -X POST http://localhost:8000/ask \
+ollama pull qwen2.5:7b
+# .env:
+#   LLM_PROVIDER=ollama
+#   ANSWER_MODEL=qwen2.5:7b
+#   GRADER_MODEL=qwen2.5:7b
+#   CONTEXT_AUG_MODEL=qwen2.5:7b
+python scripts/ingest.py
+uvicorn src.api:app --reload --port 8000
+```
+
+> Other OpenAI-compatible servers (vLLM, LM Studio) work too: set
+> `LLM_PROVIDER=openai_compatible` and `OPENAI_BASE_URL`. The embedding and
+> reranker models always run locally regardless of provider.
+
+### 4. Open the chat UI
+
+Visit **http://localhost:8000/** — ask a question, watch tokens stream, and see
+the rewritten query, grade verdict, source cards, and clickable `[#n]` citations.
+Or hit the API directly:
+
+```bash
+curl -N -X POST http://localhost:8000/ask/stream \
   -H "Content-Type: application/json" \
   -d '{"query": "What do I do if pump P-100 shows alarm code 4F?"}'
 ```
 
-You'll see streamed tokens + a final citations block.
-
 ### 5. Run evaluation
 
 ```bash
-python scripts/run_eval.py
+python scripts/run_eval.py   # RAGAS: faithfulness, answer_relevancy, context precision/recall
 ```
 
-Prints RAGAS scores: faithfulness, answer_relevancy, context_precision, context_recall.
+## Chat UI
+
+A single static page (`src/static/index.html`, no build step) served at `/`:
+streaming answer, a metadata line showing the rewrite + grade, a sources panel
+with per-chunk scores, and citation markers that highlight their source card.
+A warning badge appears when citation verification finds orphaned references.
+It is **demo-grade** — dark theme, laptop-oriented, no mobile/accessibility work.
+
+## Ingestion (incremental)
+
+`python scripts/ingest.py` only embeds new/changed chunks and deletes stale ones;
+`data/chunks.json` is the single source of truth (BM25 is rebuilt from it in memory
+at startup). Contextual-augmentation blurbs are cached by content hash, so an
+interrupted run resumes without repaying LLM calls. Use `--rebuild` to drop the
+collection and start clean, `--no-contextual` to skip the augmentation step.
+
+## Security & guardrails
+
+- Set `API_KEYS=key1,key2` to require an `X-API-Key` header (empty = open, for
+  local dev); `/health` is always open. `RATE_LIMIT_RPM` caps requests per key/IP.
+- Queries and retrieved chunks are screened for prompt-injection patterns;
+  flagged chunks are dropped from the generation context and logged.
+- PII (emails, phone numbers) is redacted in logs always, and in the `/ask`
+  answer when `REDACT_PII_IN_ANSWERS=true`. Note: streamed tokens are **not**
+  redacted mid-flight.
+
+## Observability
+
+Structured JSON logs carry a `request_id` (propagated from an inbound
+`X-Request-ID` or generated) on every line and in every response. Set
+`LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY` to emit one trace per request with
+spans for rewrite/retrieve/grade/generate incl. model + token usage; without
+keys it is a zero-overhead no-op.
+
+## Tests
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest tests/ -q      # no API key, no Docker, no network required
+```
+
+Unit tests mock the LLM, Qdrant, and HTTP transports, covering RRF, chunking,
+grader parsing, retry/backoff/fallback, all three providers, guardrails, citation
+verification, auth + rate limiting, ingest manifest diffing, and the API. CI runs
+them on every push/PR (`.github/workflows/ci.yml`).
 
 ## What to experiment with
 
-Each of these is a 1-2 hour exercise that teaches a production lesson:
+1. Turn off contextual retrieval (`--no-contextual`) and re-run eval — watch context_precision drop.
+2. Query a part number ("P-100") and compare BM25-heavy vs dense results.
+3. Force the grader to "insufficient" once and watch the LangGraph retry loop fire.
+4. Swap `LLM_PROVIDER` between anthropic and ollama and compare answers.
+5. Add a doc to `data/docs/`, re-ingest — only the new chunks embed.
+6. Enable Langfuse and inspect per-node traces.
 
-1. **Turn off contextual retrieval** in `src/ingestion.py` and re-run eval. Watch context_precision drop.
-2. **Disable BM25** in `src/retrieval.py` and query for a part number ("P-100"). Compare to hybrid.
-3. **Skip the reranker** and compare top-5 context quality manually.
-4. **Force the grader to "insufficient"** once and watch the LangGraph retry loop fire.
-5. **Add a new doc** to `data/docs/` and re-ingest. Confirm it's retrievable.
-6. **Enable Langfuse** (`LANGFUSE_PUBLIC_KEY` in `.env`) and watch full traces in the UI.
+## Honest limits (the remaining gaps)
 
-## Honest limits of this codebase
+This round hardened the pipeline; it deliberately does **not** yet include:
 
-- Uses local embedding/reranker models (`bge-small`, `bge-reranker-base`) — production would use Cohere, OpenAI, or fine-tuned domain models.
-- Qdrant runs single-node — production needs replicas + backups.
-- No auth on the API — production needs OAuth/JWT + per-user ACLs on retrieval.
-- Guardrails are minimal — production would use NeMo Guardrails or LlamaGuard.
-- No prompt versioning — production would use Langfuse Prompt Management or similar.
+- **Agentic depth**: no tool-use/function-calling agent, no query routing/intent
+  classification, no multi-query decomposition, no conversation memory.
+- **Answer self-check** beyond citation verification (no post-hoc faithfulness loop).
+- **Data layer**: Markdown only (no PDF/Word/OCR/tables); no per-user retrieval ACLs;
+  no document-revision/freshness model.
+- **Scale**: single-node Qdrant, in-process BM25 (~100k chunks), single-instance
+  rate limiter (move to Redis for multi-replica); guardrails are heuristic
+  (integration point for NeMo Guardrails / LlamaGuard).
+- **MLOps**: no prompt versioning/A-B testing, no online eval / feedback capture,
+  no index backup/restore, no semantic cache.
 
-These are the gaps a senior interviewer will probe. Knowing them is the point.
+Knowing these — and where in the code they'd plug in — is the point.
 
 ## License
 
