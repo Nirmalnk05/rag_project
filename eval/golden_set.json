@@ -1,0 +1,30 @@
+[
+  {
+    "question": "What do I do if pump P-100 shows alarm code 4F?",
+    "ground_truth": "Code 4F means low suction-side pressure. Check that the sea chest valve is fully open, inspect the suction strainer for debris (2mm mesh, biological fouling common), check for air entrainment in heavy swell, and if all those are clean, suspect a leaking suction-side gasket. Do not suppress the alarm without isolating cause — cavitation can damage the impeller within 20 minutes."
+  },
+  {
+    "question": "What is the recommended bearing alignment tolerance for the P-100?",
+    "ground_truth": "Maximum permissible coupling misalignment for the P-100 is 0.15mm radial, measured using a dial indicator."
+  },
+  {
+    "question": "How often should the condenser fins be cleaned on a CH-200 chiller in coastal use?",
+    "ground_truth": "Every 6 weeks in coastal installations, reduced from the standard 6-month interval. Use a soft-bristle brush and demineralized water spray; do not use pressure washers directly on the fins."
+  },
+  {
+    "question": "What caused the earth fault on vessel CG-04 in March 2024?",
+    "ground_truth": "Long-term seawater ingress through a degraded deck-penetration cable gland on the 440V auxiliary winch motor supply cable. Salt deposits inside the deckhead compromised the cable's insulation resistance, causing continuous leakage to ground."
+  },
+  {
+    "question": "What part number is the P-100 mechanical seal?",
+    "ground_truth": "MSC-100-A — the mechanical seal cartridge for the P-100 pump."
+  },
+  {
+    "question": "What is the new deck gland inspection interval after the CG-04 incident?",
+    "ground_truth": "18 months for cables in spray zones, reduced from the previous 5-year interval. A fleet-wide gland audit was also conducted."
+  },
+  {
+    "question": "What should I do if the CH-200 throws fault E-24?",
+    "ground_truth": "E-24 indicates refrigerant leak detection. Immediately shut down the unit and evacuate the equipment room — R-410A is non-toxic but displaces oxygen in confined spaces. Do not restart until a leak inspection is complete and the cause is rectified."
+  }
+]

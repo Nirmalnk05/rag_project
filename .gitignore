@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+.pytest_cache/
+# generated artifacts
+data/chunks.json
+data/bm25_index.pkl
+data/ingest_manifest.json
+data/context_cache.json
