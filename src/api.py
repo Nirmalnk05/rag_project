@@ -1,37 +1,77 @@
-"""FastAPI service exposing the agentic RAG graph over Server-Sent Events."""
+"""FastAPI service: agentic RAG over JSON + SSE, with auth, rate limiting,
+request IDs, structured errors, and a minimal chat UI at /."""
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
+import uuid
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import AsyncIterator
 
-from fastapi import FastAPI
-from fastapi.responses import StreamingResponse
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
+from starlette.middleware.base import BaseHTTPMiddleware
 
-from src.graph import stream_answer, run_sync
-from src.retrieval import Retriever
+from src.config import get_settings
+from src.graph import build_state_graph, run_graph, stream_answer
+from src.guardrails import check_input, redact_pii
+from src.observability import (
+    get_tracer, log_event, request_id_var, reset_current_trace, set_current_trace,
+    setup_logging,
+)
+from src.providers.base import LLMError
+from src.security import rate_limiter, require_api_key
 
-
-_retriever: Retriever | None = None
+_logger = logging.getLogger("rag.api")
+_STATIC_DIR = Path(__file__).parent / "static"
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Load models + indexes once at startup."""
-    global _retriever
-    print("[api] loading retriever (models + indexes)...")
-    _retriever = Retriever()
-    print("[api] ready.")
+    setup_logging()
+    settings = get_settings()
+    settings.validate_provider()
+    log_event(_logger, "startup_loading_retriever")
+    from src.retrieval import Retriever
+    app.state.retriever = await asyncio.to_thread(Retriever)
+    app.state.graph_full = build_state_graph(app.state.retriever)
+    app.state.graph_pre = build_state_graph(app.state.retriever, include_generate=False)
+    log_event(_logger, "startup_ready", provider=settings.llm_provider)
     yield
-    # nothing to clean up
 
 
-app = FastAPI(title="Production RAG", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Production RAG", version="0.2.0", lifespan=lifespan)
+
+
+class RequestIDMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        rid = request.headers.get("X-Request-ID") or uuid.uuid4().hex[:16]
+        token = request_id_var.set(rid)
+        try:
+            response = await call_next(request)
+            response.headers["X-Request-ID"] = rid
+            return response
+        finally:
+            request_id_var.reset(token)
+
+
+app.add_middleware(RequestIDMiddleware)
+
+
+@app.exception_handler(LLMError)
+async def llm_error_handler(request: Request, exc: LLMError):
+    log_event(_logger, "llm_error", error=str(exc))
+    return JSONResponse(status_code=502, content={
+        "error": "upstream LLM failure", "request_id": request_id_var.get(),
+    })
 
 
 class AskRequest(BaseModel):
     query: str = Field(..., min_length=2, max_length=2000)
+    filters: dict[str, str] | None = None
 
 
 class AskResponse(BaseModel):
@@ -40,41 +80,79 @@ class AskResponse(BaseModel):
     rewritten_query: str
     grade: str
     retrieval: list[dict]
+    citations: dict
+    request_id: str
 
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "retriever_loaded": _retriever is not None}
+    return {
+        "status": "ok",
+        "retriever_loaded": getattr(app.state, "retriever", None) is not None,
+        "provider": get_settings().llm_provider,
+    }
 
 
-@app.post("/ask", response_model=AskResponse)
-def ask_sync(req: AskRequest) -> AskResponse:
-    """Non-streaming JSON endpoint. Easier for eval scripts and tests."""
-    state = run_sync(_retriever, req.query)  # type: ignore[arg-type]
+@app.get("/")
+def chat_ui() -> FileResponse:
+    return FileResponse(_STATIC_DIR / "index.html")
+
+
+def _guard(query: str) -> None:
+    reason = check_input(query)
+    if reason:
+        raise HTTPException(status_code=400, detail=f"query rejected: {reason}")
+
+
+@app.post("/ask", response_model=AskResponse,
+          dependencies=[Depends(require_api_key), Depends(rate_limiter)])
+async def ask(req: AskRequest) -> AskResponse:
+    _guard(req.query)
+    settings = get_settings()
+    rid = request_id_var.get()
+    trace = get_tracer().trace(name="ask", request_id=rid, input=req.query)
+    tok = set_current_trace(trace)
+    try:
+        state = await run_graph(app.state.graph_full, req.query, req.filters)
+    finally:
+        reset_current_trace(tok)
+    answer = state.get("answer", "")
+    if settings.redact_pii_in_answers:
+        answer, _found = redact_pii(answer)
+    trace.end(output=answer)
     return AskResponse(
-        query=req.query,
-        answer=state.get("answer", ""),
+        query=req.query, answer=answer,
         rewritten_query=state.get("rewritten", ""),
         grade=state.get("grade", ""),
         retrieval=state.get("retrieval", []),
+        citations=state.get("citations", {}),
+        request_id=rid,
     )
 
 
-@app.post("/ask/stream")
+@app.post("/ask/stream",
+          dependencies=[Depends(require_api_key), Depends(rate_limiter)])
 async def ask_stream(req: AskRequest) -> StreamingResponse:
-    """Streaming endpoint via SSE. Each event is a JSON object."""
+    _guard(req.query)
+    rid = request_id_var.get()
 
     async def event_generator() -> AsyncIterator[str]:
-        async for evt in stream_answer(_retriever, req.query):  # type: ignore[arg-type]
-            yield f"data: {json.dumps(evt)}\n\n"
+        trace = get_tracer().trace(name="ask_stream", request_id=rid, input=req.query)
+        tok = set_current_trace(trace)
+        try:
+            async for evt in stream_answer(app.state.graph_pre, req.query, req.filters):
+                if evt.get("type") == "final":
+                    evt["request_id"] = rid
+                yield f"data: {json.dumps(evt)}\n\n"
+        except Exception as e:  # noqa: BLE001 — stream must report, not vanish
+            _logger.exception("stream_failed")
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e), 'request_id': rid})}\n\n"
+        finally:
+            reset_current_trace(tok)
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
+        event_generator(), media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive",
+                 "X-Accel-Buffering": "no"},
     )

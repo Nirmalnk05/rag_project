@@ -1,7 +1,8 @@
 """Run the ingestion pipeline.
 
 Usage:
-    python scripts/ingest.py                  # full pipeline (with contextual retrieval)
+    python scripts/ingest.py                  # incremental (with contextual retrieval)
+    python scripts/ingest.py --rebuild        # drop the collection and re-ingest everything
     python scripts/ingest.py --no-contextual  # skip the LLM contextual aug step
 """
 from __future__ import annotations
@@ -19,6 +20,7 @@ from src.ingestion import run_ingestion
 def main() -> int:
     parser = argparse.ArgumentParser(description="Ingest documents into Qdrant + BM25 indexes.")
     parser.add_argument("--no-contextual", action="store_true", help="Skip the contextual augmentation LLM step.")
+    parser.add_argument("--rebuild", action="store_true", help="Drop the collection and re-ingest everything.")
     parser.add_argument(
         "--docs-dir",
         type=Path,
@@ -27,7 +29,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    run_ingestion(docs_dir=args.docs_dir, use_contextual=not args.no_contextual)
+    run_ingestion(docs_dir=args.docs_dir, use_contextual=not args.no_contextual, rebuild=args.rebuild)
     return 0
 
 

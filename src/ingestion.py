@@ -1,35 +1,29 @@
 """Ingestion pipeline: parse → chunk → contextually augment → dual-index.
 
 Implements Anthropic's contextual retrieval pattern: each chunk gets a small
-LLM-generated context blurb prepended before embedding/indexing, dramatically
-improving recall on chunks that are meaningful only in document context.
+LLM-generated context blurb prepended before embedding/indexing.
+
+Ingestion is incremental: a content-hash manifest lets unchanged chunks skip
+both LLM augmentation and re-embedding; stale chunks are deleted from Qdrant.
+data/chunks.json is the single source of truth (BM25 is rebuilt from it at
+Retriever startup — there is no separate BM25 artifact anymore).
 """
 from __future__ import annotations
 
 import hashlib
 import json
-import pickle
 import re
+import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Iterable
-
-import numpy as np
-from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, PointStruct, VectorParams
-from rank_bm25 import BM25Okapi
-from sentence_transformers import SentenceTransformer
-from tqdm import tqdm
 
 from src.config import get_settings
-from src.llm import complete
-
 
 _settings = get_settings()
 
-# Persisted artifacts (BM25 lives on disk; Qdrant is the vector store)
-BM25_INDEX_PATH = Path("data/bm25_index.pkl")
 CHUNK_STORE_PATH = Path("data/chunks.json")
+MANIFEST_PATH = Path("data/ingest_manifest.json")
+CONTEXT_CACHE_PATH = Path("data/context_cache.json")
 
 
 # ---------- data model ----------
@@ -107,33 +101,56 @@ Give a short, 1–2 sentence context that situates this chunk within the documen
 
 
 def contextual_augment(doc_body: str, chunk_text: str) -> str:
-    """One small-LLM call per chunk. Returns 1-2 sentence context blurb.
-
-    Production: batch these, cache by chunk-hash, and run as a separate ingestion step.
-    """
-    # Truncate the doc to keep token costs sane; production would chunk-then-summarize.
+    """One small-LLM call per chunk (cache-checked by callers)."""
     doc_snip = doc_body[:8000]
     prompt = CONTEXT_AUG_PROMPT.format(doc=doc_snip, chunk=chunk_text)
-    return complete(
-        prompt,
-        model=_settings.context_aug_model,
-        max_tokens=120,
-        temperature=0.0,
-    ).strip()
+    from src.llm import complete_sync
+    return complete_sync(
+        prompt, model=_settings.context_aug_model, max_tokens=120, temperature=0.0
+    ).text.strip()
 
 
-# ---------- indexing ----------
+# ---------- identity & hashing ----------
 
 def _hash_id(*parts: str) -> str:
     return hashlib.sha256("||".join(parts).encode()).hexdigest()[:16]
 
 
-def _tokenize(text: str) -> list[str]:
-    """Cheap tokenizer for BM25. Lowercased alphanumeric words; production: spacy/nltk."""
-    return re.findall(r"[a-z0-9]+", text.lower())
+def chunk_content_hash(doc_title: str, section: str, raw_text: str) -> str:
+    return hashlib.sha256(f"{doc_title}||{section}||{raw_text}".encode()).hexdigest()
 
 
-def build_chunks(docs_dir: Path, use_contextual: bool = True) -> list[Chunk]:
+def point_id_for(chunk_id: str) -> str:
+    """Deterministic Qdrant point id so re-ingest upserts in place."""
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, chunk_id))
+
+
+def diff_manifest(current: dict[str, str], previous: dict[str, str]) -> tuple[set, set, set]:
+    """Returns (new_ids, changed_ids, stale_ids)."""
+    new = {i for i in current if i not in previous}
+    changed = {i for i in current if i in previous and current[i] != previous[i]}
+    stale = {i for i in previous if i not in current}
+    return new, changed, stale
+
+
+def _load_json(path: Path, default):
+    if path.exists():
+        with path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    return default
+
+
+def _save_json(path: Path, obj) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(obj, f, ensure_ascii=False, indent=2)
+
+
+# ---------- chunk building (augmentation cache-aware) ----------
+
+def build_chunks(docs_dir: Path, use_contextual: bool = True,
+                 context_cache: dict[str, str] | None = None) -> list[Chunk]:
+    context_cache = context_cache if context_cache is not None else {}
     chunks: list[Chunk] = []
     files = sorted(docs_dir.glob("*.md"))
     if not files:
@@ -145,88 +162,92 @@ def build_chunks(docs_dir: Path, use_contextual: bool = True) -> list[Chunk]:
             for raw in _windowed_chunks(section_body):
                 ctx = ""
                 if use_contextual:
-                    print(f"  augmenting chunk in '{section_title}'...", flush=True)
-                    ctx = contextual_augment(body, raw)
-                # The text that's embedded/indexed is context + chunk.
-                # The text shown back to the LLM is just the raw chunk (with context as metadata).
+                    key = chunk_content_hash(title, section_title, raw)
+                    if key in context_cache:
+                        ctx = context_cache[key]
+                    else:
+                        print(f"  augmenting chunk in '{section_title}'...", flush=True)
+                        ctx = contextual_augment(body, raw)
+                        context_cache[key] = ctx
+                        _save_json(CONTEXT_CACHE_PATH, context_cache)  # resumable
                 embed_text = f"{ctx}\n\n{raw}" if ctx else raw
-                chunks.append(
-                    Chunk(
-                        id=_hash_id(doc_id, section_title, raw[:200]),
-                        doc_id=doc_id,
-                        doc_title=title,
-                        text=raw,
-                        context=ctx,
-                        embed_text=embed_text,
-                        section=section_title,
-                        metadata={"source_file": path.name},
-                    )
-                )
+                chunks.append(Chunk(
+                    id=_hash_id(doc_id, section_title, raw[:200]),
+                    doc_id=doc_id, doc_title=title, text=raw, context=ctx,
+                    embed_text=embed_text, section=section_title,
+                    metadata={"source_file": path.name},
+                ))
     return chunks
 
 
-def index_qdrant(chunks: list[Chunk], embedder: SentenceTransformer) -> None:
+# ---------- indexing ----------
+
+def index_qdrant_incremental(chunks: list[Chunk], embedder, *,
+                             to_upsert: set[str], stale_ids: set[str],
+                             rebuild: bool = False) -> None:
+    from qdrant_client import QdrantClient
+    from qdrant_client.models import Distance, PointStruct, VectorParams
+
     client = QdrantClient(host=_settings.qdrant_host, port=_settings.qdrant_port)
     dim = embedder.get_sentence_embedding_dimension()
 
-    # Recreate collection (idempotent)
-    if client.collection_exists(_settings.qdrant_collection):
+    if rebuild and client.collection_exists(_settings.qdrant_collection):
         client.delete_collection(_settings.qdrant_collection)
-    client.create_collection(
-        collection_name=_settings.qdrant_collection,
-        vectors_config=VectorParams(size=dim, distance=Distance.COSINE),
-    )
-
-    texts = [c.embed_text for c in chunks]
-    print(f"  embedding {len(texts)} chunks...", flush=True)
-    vectors = embedder.encode(
-        texts,
-        batch_size=32,
-        normalize_embeddings=True,
-        show_progress_bar=True,
-    )
-
-    points = [
-        PointStruct(
-            id=i,  # qdrant needs int or uuid; we use array index and store the real id in payload
-            vector=vec.tolist(),
-            payload={**c.to_dict()},
+    if not client.collection_exists(_settings.qdrant_collection):
+        client.create_collection(
+            collection_name=_settings.qdrant_collection,
+            vectors_config=VectorParams(size=dim, distance=Distance.COSINE),
         )
-        for i, (c, vec) in enumerate(zip(chunks, vectors))
+
+    if stale_ids:
+        client.delete(
+            collection_name=_settings.qdrant_collection,
+            points_selector=[point_id_for(cid) for cid in stale_ids],
+        )
+        print(f"  deleted {len(stale_ids)} stale points")
+
+    todo = [c for c in chunks if c.id in to_upsert]
+    if not todo:
+        print("  nothing new to embed/upsert")
+        return
+    print(f"  embedding {len(todo)} chunks...", flush=True)
+    vectors = embedder.encode([c.embed_text for c in todo], batch_size=32,
+                              normalize_embeddings=True, show_progress_bar=True)
+    points = [
+        PointStruct(id=point_id_for(c.id), vector=v.tolist(), payload=c.to_dict())
+        for c, v in zip(todo, vectors)
     ]
-    # Batch upload
     BATCH = 64
     for i in range(0, len(points), BATCH):
-        client.upsert(collection_name=_settings.qdrant_collection, points=points[i : i + BATCH])
-    print(f"  indexed {len(points)} points into Qdrant '{_settings.qdrant_collection}'")
-
-
-def index_bm25(chunks: list[Chunk]) -> None:
-    BM25_INDEX_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tokenized = [_tokenize(c.embed_text) for c in chunks]
-    bm25 = BM25Okapi(tokenized)
-    # Save the BM25 index + the chunk metadata (parallel arrays keyed by index)
-    with BM25_INDEX_PATH.open("wb") as f:
-        pickle.dump({"bm25": bm25, "tokenized_len": len(tokenized)}, f)
-    with CHUNK_STORE_PATH.open("w", encoding="utf-8") as f:
-        json.dump([c.to_dict() for c in chunks], f, ensure_ascii=False, indent=2)
-    print(f"  indexed {len(chunks)} chunks into BM25 store")
+        client.upsert(collection_name=_settings.qdrant_collection,
+                      points=points[i:i + BATCH])
+    print(f"  upserted {len(points)} points into Qdrant '{_settings.qdrant_collection}'")
 
 
 # ---------- entry point ----------
 
-def run_ingestion(docs_dir: Path = Path("data/docs"), use_contextual: bool = True) -> None:
-    print(f"[ingest] building chunks from {docs_dir} (contextual={use_contextual})")
-    chunks = build_chunks(docs_dir, use_contextual=use_contextual)
-    print(f"[ingest] built {len(chunks)} chunks")
+def run_ingestion(docs_dir: Path = Path("data/docs"), use_contextual: bool = True,
+                  rebuild: bool = False) -> None:
+    print(f"[ingest] building chunks from {docs_dir} (contextual={use_contextual}, rebuild={rebuild})")
+    context_cache = {} if rebuild else _load_json(CONTEXT_CACHE_PATH, {})
+    previous_manifest = {} if rebuild else _load_json(MANIFEST_PATH, {})
+
+    chunks = build_chunks(docs_dir, use_contextual=use_contextual, context_cache=context_cache)
+    current_manifest = {
+        c.id: chunk_content_hash(c.doc_title, c.section, c.text) for c in chunks
+    }
+    new, changed, stale = diff_manifest(current_manifest, previous_manifest)
+    to_upsert = new | changed if not rebuild else set(current_manifest)
+    print(f"[ingest] {len(chunks)} chunks total — new={len(new)} changed={len(changed)} stale={len(stale)}")
 
     print("[ingest] loading embedding model...")
+    from sentence_transformers import SentenceTransformer
     embedder = SentenceTransformer(_settings.embed_model)
 
-    print("[ingest] indexing into Qdrant...")
-    index_qdrant(chunks, embedder)
+    index_qdrant_incremental(chunks, embedder, to_upsert=to_upsert,
+                             stale_ids=stale, rebuild=rebuild)
 
-    print("[ingest] indexing into BM25...")
-    index_bm25(chunks)
-
+    _save_json(CHUNK_STORE_PATH, [c.to_dict() for c in chunks])
+    _save_json(MANIFEST_PATH, current_manifest)
+    _save_json(CONTEXT_CACHE_PATH, context_cache)
     print("[ingest] done.")
