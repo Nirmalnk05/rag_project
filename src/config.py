@@ -57,6 +57,16 @@ class Settings(BaseSettings):
     enable_figure_caption: bool = True
     vision_model: str = ""  # e.g. a Claude vision model, or "llama3.2-vision"
 
+    # Document parsing
+    parse_backend: str = "hybrid"          # local | cloud | hybrid
+    cloud_parse_provider: str = "llamaparse"  # llamaparse | azure
+    llamaparse_api_key: str = ""
+    azure_di_endpoint: str = ""
+    azure_di_key: str = ""
+    cloud_parse_min_chars: int = 200       # local result below this ⇒ low-confidence
+    ocr_engine: str = "easyocr"            # easyocr | tesseract
+    ocr_languages: str = "en"
+
     # Tracing (optional)
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""
@@ -69,6 +79,14 @@ class Settings(BaseSettings):
     @property
     def api_key_set(self) -> set[str]:
         return {k.strip() for k in self.api_keys.split(",") if k.strip()}
+
+    @property
+    def cloud_parse_configured(self) -> bool:
+        if self.cloud_parse_provider == "llamaparse":
+            return bool(self.llamaparse_api_key)
+        if self.cloud_parse_provider == "azure":
+            return bool(self.azure_di_endpoint and self.azure_di_key)
+        return False
 
     def validate_provider(self) -> None:
         """Fail fast at startup with a clear message."""
