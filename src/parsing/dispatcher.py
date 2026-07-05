@@ -18,24 +18,33 @@ _logger = logging.getLogger("rag.parsing")
 
 EXCEL_EXT = {".xlsx", ".xls"}
 LOCAL_EXT = {".pdf", ".docx", ".doc"}
-SUPPORTED_EXT = EXCEL_EXT | LOCAL_EXT | {".md"}
+MD_EXT = {".md", ".markdown"}
+SUPPORTED_EXT = EXCEL_EXT | LOCAL_EXT | MD_EXT
 
 
 class Dispatcher:
     def __init__(self, *, settings: Settings | None = None,
                  local: DocumentParser | None = None,
                  cloud: DocumentParser | None = None,
-                 excel: DocumentParser | None = None) -> None:
+                 excel: DocumentParser | None = None,
+                 markdown: DocumentParser | None = None) -> None:
         self._s = settings or get_settings()
         self._local = local
         self._cloud = cloud
         self._excel = excel or ExcelParser()
+        self._markdown = markdown
 
     def _local_parser(self) -> DocumentParser:
         if self._local is None:
             from src.parsing.local_parser import LocalParser
             self._local = LocalParser(settings=self._s)
         return self._local
+
+    def _markdown_parser(self) -> DocumentParser:
+        if self._markdown is None:
+            from src.parsing.markdown_parser import MarkdownParser
+            self._markdown = MarkdownParser()
+        return self._markdown
 
     def _cloud_parser(self) -> DocumentParser | None:
         if self._cloud is not None:
@@ -58,6 +67,8 @@ class Dispatcher:
         ext = path.suffix.lower()
         if ext in EXCEL_EXT:
             return self._excel.parse(path)
+        if ext in MD_EXT:
+            return self._markdown_parser().parse(path)
         if ext not in LOCAL_EXT:
             raise ParseError(f"unsupported file type: {ext}")
 
