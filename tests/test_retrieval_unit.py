@@ -89,3 +89,28 @@ def test_sparse_search_enforces_acl(tmp_path):
     # access=None (ACL disabled) → all visible
     ids_none = {o.chunk_id for o in r.sparse_search("pump", top_k=5)}
     assert ids_none == {"c1", "c2"}
+
+
+def test_sparse_search_hides_superseded(tmp_path):
+    def _c(cid, text, status):
+        return {"id": cid, "doc_id": "d", "doc_title": "T", "section": "S",
+                "text": text, "context": "", "embed_text": text,
+                "metadata": {"source_file": f"{cid}.md", "doc_status": status}}
+    chunks = [
+        _c("cur", "pump procedure current", "active"),
+        _c("old", "pump procedure old", "superseded"),
+        {"id": "f1", "doc_id": "d", "doc_title": "T", "section": "S",
+         "text": "chiller condenser", "context": "", "embed_text": "chiller condenser",
+         "metadata": {"source_file": "f1.md"}},
+        {"id": "f2", "doc_id": "d", "doc_title": "T", "section": "S",
+         "text": "bearing alignment", "context": "", "embed_text": "bearing alignment",
+         "metadata": {"source_file": "f2.md"}},
+        {"id": "f3", "doc_id": "d", "doc_title": "T", "section": "S",
+         "text": "earth fault cable gland", "context": "", "embed_text": "earth fault cable gland",
+         "metadata": {"source_file": "f3.md"}},
+    ]
+    path = tmp_path / "chunks.json"
+    path.write_text(json.dumps(chunks), encoding="utf-8")
+    r = Retriever(chunks_path=path, load_models=False, qdrant_client=object())
+    ids = {o.chunk_id for o in r.sparse_search("pump procedure", top_k=5)}
+    assert ids == {"cur"}  # superseded revision hidden by default

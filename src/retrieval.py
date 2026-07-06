@@ -55,6 +55,13 @@ def _validate_filters(filters: dict | None) -> None:
             raise ValueError(f"unsupported filter key(s): {sorted(bad)}")
 
 
+def _fresh(meta: dict, include_superseded: bool) -> bool:
+    """Hide superseded document revisions unless explicitly requested."""
+    if include_superseded:
+        return True
+    return meta.get("doc_status", "active") != "superseded"
+
+
 def _matches_filters(chunk: dict, filters: dict | None) -> bool:
     if not filters:
         return True
@@ -136,7 +143,8 @@ class Retriever:
         out = []
         for h in res.points:
             p = h.payload or {}
-            if not acl_visible(p.get("metadata", {}), access):
+            meta = p.get("metadata", {})
+            if not acl_visible(meta, access) or not _fresh(meta, s.retrieve_superseded):
                 continue
             out.append(Retrieved(
                 chunk_id=p.get("id", ""), doc_id=p.get("doc_id", ""),
@@ -150,6 +158,7 @@ class Retriever:
                       access=None) -> list[Retrieved]:
         _validate_filters(filters)
         from src.access import acl_visible
+        s = get_settings()
         scores = self._bm25.get_scores(_tokenize(query))
         ranked = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
         out: list[Retrieved] = []
@@ -159,7 +168,8 @@ class Retriever:
             c = self._chunks[i]
             if not _matches_filters(c, filters):
                 continue
-            if not acl_visible(c.get("metadata", {}), access):
+            meta = c.get("metadata", {})
+            if not acl_visible(meta, access) or not _fresh(meta, s.retrieve_superseded):
                 continue
             out.append(_from_chunk(c, float(scores[i]), "bm25"))
         return out
