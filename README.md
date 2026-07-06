@@ -252,6 +252,29 @@ them on every push/PR (`.github/workflows/ci.yml`).
 5. Add a doc to `data/docs/`, re-ingest — only the new chunks embed.
 6. Enable Langfuse and inspect per-node traces.
 
+## Deployment
+
+The system runs **fully air-gapped on-prem** or **horizontally-scaled on cloud**;
+everything except first-time model-weight downloads works offline.
+
+- **Air-gapped on-prem** — `LLM_PROVIDER=ollama` + `PARSE_BACKEND=local` + baked
+  model weights = zero internet egress. Bring up `docker-compose.offline.yml`
+  (Qdrant + Ollama + app). Full walkthrough (pre-baking weights, transferring the
+  Ollama volume, running disconnected): [docs/deployment/on-prem-airgapped.md](docs/deployment/on-prem-airgapped.md).
+- **Cloud (Kubernetes)** — stateless API, scaled to N replicas. Set
+  `RATE_LIMIT_BACKEND=redis` so the rate limit is shared across pods; `/ready`
+  gates traffic until models load. Manifests in `deploy/k8s/`; guide:
+  [docs/deployment/cloud.md](docs/deployment/cloud.md).
+
+**What needs internet (and how to avoid it):** the Anthropic/OpenAI/Azure LLM
+APIs (→ use Ollama/local), LlamaParse/Azure cloud parsing (→ `PARSE_BACKEND=local`),
+cloud Langfuse (→ disable or self-host), and the one-time download of the BGE and
+Docling model weights (→ `scripts/prefetch_models.py` bakes them in during a
+connected build, then `HF_HUB_OFFLINE=1` at runtime).
+
+**Agentic RAG offline?** Yes — agent mode works air-gapped with a tool-capable
+local model (`llama3.1`+ on Ollama); quality scales with model size.
+
 ## Honest limits (the remaining gaps)
 
 This round hardened the pipeline; it deliberately does **not** yet include:
