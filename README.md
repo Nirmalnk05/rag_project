@@ -203,6 +203,18 @@ in SAP PM / Maximo / Fiix rather than in manuals. A `MockCMMSConnector`
 ([src/agent/cmms.py](src/agent/cmms.py)) ships for offline/demo use; it's the seam
 for a real connector.
 
+**Semantic answer cache.** With `ENABLE_SEMANTIC_CACHE=true`, a repeated or
+near-identical question (cosine ≥ `SEMANTIC_CACHE_THRESHOLD` on the query
+embedding) is served from cache without re-running the LLM — the response carries
+`cached: true`. Deliberately skipped when ACLs are on (answers differ per
+principal), when there's conversation history, or when filters are applied, to
+avoid serving a wrong answer ([src/cache.py](src/cache.py)).
+
+**Guardrails backend.** Input screening is pluggable via `GUARDRAILS_BACKEND`:
+`heuristic` (default regex injection screen) or `external` — register a real
+classifier (LlamaGuard / NeMo Guardrails / a moderation API) with
+`guardrails.set_external_screen(fn)` at startup ([src/guardrails.py](src/guardrails.py)).
+
 **Safety escalation.** For high-risk topics (electrical/440V, lockout-tagout,
 stored pressure, confined space, refrigerant) the response carries a `safety`
 notice recommending the relevant procedure and supervisor sign-off — surfaced as a

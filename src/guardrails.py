@@ -30,13 +30,37 @@ _PII_PATTERNS = {
 
 
 def check_input(query: str) -> str | None:
-    """Return a rejection reason, or None if the query is acceptable."""
+    """Heuristic input check. Return a rejection reason, or None if acceptable."""
     if any(ord(c) < 32 and c not in "\n\r\t" for c in query):
         return "query contains control characters"
     for pat in _INJECTION_PATTERNS:
         if pat.search(query):
             return "query matches a prompt-injection pattern"
     return None
+
+
+# ---------- pluggable backend (heuristic default; external seam for LlamaGuard/NeMo) ----------
+
+_external_screen = None
+
+
+def set_external_screen(fn) -> None:
+    """Register an external moderation callable: fn(query) -> reason|None.
+    Wire LlamaGuard / NeMo Guardrails / a moderation API here."""
+    global _external_screen
+    _external_screen = fn
+
+
+def screen_input(query: str) -> str | None:
+    """Dispatch input screening by configured backend."""
+    from src.config import get_settings
+    if get_settings().guardrails_backend == "external":
+        if _external_screen is None:
+            raise RuntimeError(
+                "GUARDRAILS_BACKEND=external but no external screener is registered. "
+                "Call guardrails.set_external_screen(fn) at startup.")
+        return _external_screen(query)
+    return check_input(query)
 
 
 def screen_chunks(chunks: list[dict]) -> tuple[list[dict], list[dict]]:

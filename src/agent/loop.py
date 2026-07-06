@@ -15,7 +15,7 @@ from src.agent.prompts import AGENT_SYSTEM
 from src.agent.tools import ToolRegistry
 from src.citations import verify_citations
 from src.config import get_settings
-from src.guardrails import check_input
+from src.guardrails import screen_input
 from src.observability import log_event, node_span
 from src.providers.factory import get_provider
 from src.providers.retry import call_with_retries
@@ -34,7 +34,7 @@ async def stream_agent(query, retriever, *, filters=None, settings=None, provide
     s = settings or get_settings()
     provider = provider or get_provider()
 
-    reason = check_input(query)
+    reason = screen_input(query)
     if reason:
         yield {"type": "error", "message": f"query rejected: {reason}"}
         return

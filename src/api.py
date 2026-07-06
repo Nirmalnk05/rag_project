@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from src.config import get_settings
-from src.guardrails import check_input, redact_pii
+from src.guardrails import redact_pii, screen_input
 from src.orchestrator import Orchestrator
 from src.observability import (
     get_tracer, log_event, request_id_var, reset_current_trace, set_current_trace,
@@ -126,7 +126,7 @@ def session_reset(req: ResetRequest) -> dict:
 
 
 def _guard(query: str) -> None:
-    reason = check_input(query)
+    reason = screen_input(query)
     if reason:
         raise HTTPException(status_code=400, detail=f"query rejected: {reason}")
 
