@@ -66,6 +66,13 @@ class Settings(BaseSettings):
     memory_max_turns: int = 10             # user+assistant pairs kept per session
     memory_ttl_s: int = 3600
 
+    # Access control (per-user retrieval ACLs)
+    enable_acl: bool = False               # off = every chunk visible (dev default)
+
+    # CMMS / system-of-record connector (agent tool)
+    enable_cmms: bool = False
+    cmms_connector: str = "mock"           # mock | (extend with real connectors)
+
     # Figure captioning (vision)
     enable_figure_caption: bool = True
     vision_model: str = ""  # e.g. a Claude vision model, or "llama3.2-vision"
