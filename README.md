@@ -187,6 +187,21 @@ History is capped (`MEMORY_MAX_TURNS`) with a TTL and stored in-process
 (`MEMORY_BACKEND=memory`) or shared across replicas (`redis`). `POST /session/reset`
 or the UI's "New chat" button clears it. Only clean user↔assistant turns are
 kept — never the agent's tool-call scratch messages.
+
+**Access control (per-user retrieval ACLs).** With `ENABLE_ACL=true`, retrieval
+is filtered by the request principal (`X-User-Id` / `X-Roles` / `X-Sites` headers —
+map your real SSO to these) against per-document ACLs. Documents are tagged in
+`data/acl.json` (`{"restricted.pdf": {"roles": ["eng"], "sites": ["siteA"]}}`);
+unlisted docs are public. A chunk is visible only if the principal satisfies every
+ACL dimension it restricts. Enforced in both BM25 and dense retrieval and in the
+agent's `search`/`get_document_section`/`list_documents` tools, so a user never
+sees — or gets an answer grounded in — documents they aren't cleared for.
+
+**CMMS / system-of-record tool.** With `ENABLE_CMMS=true`, the agent gets a
+`query_cmms` tool for live asset status and open work orders — the data that lives
+in SAP PM / Maximo / Fiix rather than in manuals. A `MockCMMSConnector`
+([src/agent/cmms.py](src/agent/cmms.py)) ships for offline/demo use; it's the seam
+for a real connector.
 Agent mode's final answer is streamed as chunked tokens (genuine per-token
 streaming of an agent's tool-using final turn is a documented follow-up).
 

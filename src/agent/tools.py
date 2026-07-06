@@ -63,17 +63,36 @@ TOOL_SPECS = [
     ),
 ]
 
+CMMS_TOOL_SPEC = ToolSpec(
+    name="query_cmms",
+    description="Look up live asset status and open work orders from the CMMS "
+                "(maintenance system of record) for an asset id, e.g. P-100.",
+    parameters={
+        "type": "object",
+        "properties": {"asset_id": {"type": "string", "description": "asset tag, e.g. P-100"}},
+        "required": ["asset_id"],
+    },
+)
+
 
 class ToolRegistry:
-    def __init__(self, retriever, settings: Settings | None = None, access=None) -> None:
+    def __init__(self, retriever, settings: Settings | None = None, access=None,
+                 cmms=None) -> None:
         self._r = retriever
         self._s = settings or get_settings()
         self._access = access
         self.sources: list[dict] = []   # accumulated across the agent run
+        self._cmms = cmms
+        if self._cmms is None and self._s.enable_cmms:
+            from src.agent.cmms import get_cmms_connector
+            self._cmms = get_cmms_connector(self._s)
 
     @property
     def specs(self) -> list[ToolSpec]:
-        return TOOL_SPECS
+        specs = list(TOOL_SPECS)
+        if self._cmms is not None:
+            specs.append(CMMS_TOOL_SPEC)
+        return specs
 
     @property
     def num_sources(self) -> int:
@@ -92,6 +111,8 @@ class ToolRegistry:
                 return self._get_section(args.get("source_file", ""), args.get("section", ""))
             if name == "list_documents":
                 return self._list_documents()
+            if name == "query_cmms":
+                return self._query_cmms(args.get("asset_id", ""))
             return f"Error: unknown tool '{name}'"
         except Exception as e:  # noqa: BLE001 — return error to the model, don't crash the loop
             _logger.warning("tool_failed", exc_info=True)
@@ -132,6 +153,23 @@ class ToolRegistry:
             sf = c.get("metadata", {}).get("source_file", "?")
             seen[sf] = c.get("doc_title", "?")
         return "\n".join(f"- {title} ({sf})" for sf, title in sorted(seen.items()))
+
+    def _query_cmms(self, asset_id: str) -> str:
+        if self._cmms is None:
+            return "CMMS is not enabled."
+        asset = self._cmms.get_asset(asset_id)
+        if not asset:
+            return f"No asset '{asset_id}' found in the CMMS."
+        wos = self._cmms.get_work_orders(asset_id)
+        lines = [f"Asset {asset_id}: {asset.get('name','?')} — status "
+                 f"{asset.get('status','?')}, last service {asset.get('last_service','?')} "
+                 f"({asset.get('hours_since_service','?')}h ago)."]
+        if wos:
+            lines.append("Open work orders:")
+            lines += [f"  - {w['id']} ({w['type']}): {w['summary']}" for w in wos]
+        else:
+            lines.append("No open work orders.")
+        return "\n".join(lines)
 
     # ---------- helpers ----------
 
