@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rag-app
+  labels: { app: rag-app }
+spec:
+  replicas: 3
+  selector:
+    matchLabels: { app: rag-app }
+  template:
+    metadata:
+      labels: { app: rag-app }
+    spec:
+      containers:
+        - name: rag-app
+          image: your-registry/rag-app:latest   # build+push your image
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef: { name: rag-config }
+            - secretRef: { name: rag-secrets }
+          # Liveness = process up; readiness = models + orchestrator loaded.
+          livenessProbe:
+            httpGet: { path: /health, port: 8000 }
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet: { path: /ready, port: 8000 }
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 6      # allow time for model load on cold start
+          resources:
+            requests: { cpu: "1", memory: "2Gi" }
+            limits: { cpu: "2", memory: "4Gi" }
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+      volumes:
+        # chunks.json / caches. Use a ReadWriteMany PVC (or an initContainer that
+        # syncs the ingested artifacts) so every replica reads the same index.
+        - name: data
+          persistentVolumeClaim: { claimName: rag-data }

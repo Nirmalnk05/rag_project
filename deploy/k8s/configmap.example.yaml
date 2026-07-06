@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rag-config
+data:
+  # Non-secret config. For multi-replica, use the shared redis rate limiter.
+  LLM_PROVIDER: "anthropic"            # or ollama / openai_compatible
+  AGENT_MODE: "agent"
+  PARSE_BACKEND: "hybrid"
+  QDRANT_HOST: "qdrant"               # managed Qdrant host or the StatefulSet svc
+  QDRANT_PORT: "6333"
+  RATE_LIMIT_BACKEND: "redis"
+  REDIS_URL: "redis://redis:6379/0"
+  RATE_LIMIT_RPM: "60"

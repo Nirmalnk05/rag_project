@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: rag-app
+  labels: { app: rag-app }
+spec:
+  type: ClusterIP        # front with an Ingress / LoadBalancer as needed
+  selector: { app: rag-app }
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8000
