@@ -72,6 +72,7 @@ async def llm_error_handler(request: Request, exc: LLMError):
 class AskRequest(BaseModel):
     query: str = Field(..., min_length=2, max_length=2000)
     filters: dict[str, str] | None = None
+    session_id: str = Field(default="", max_length=128)
 
 
 class AskResponse(BaseModel):
@@ -82,6 +83,7 @@ class AskResponse(BaseModel):
     retrieval: list[dict]
     citations: dict
     steps: list[dict]
+    session_id: str
     request_id: str
 
 
@@ -110,6 +112,17 @@ def chat_ui() -> FileResponse:
     return FileResponse(_STATIC_DIR / "index.html")
 
 
+class ResetRequest(BaseModel):
+    session_id: str = Field(..., max_length=128)
+
+
+@app.post("/session/reset", dependencies=[Depends(require_api_key)])
+def session_reset(req: ResetRequest) -> dict:
+    from src.memory import get_store
+    get_store().reset(req.session_id)
+    return {"status": "reset", "session_id": req.session_id}
+
+
 def _guard(query: str) -> None:
     reason = check_input(query)
     if reason:
@@ -125,7 +138,7 @@ async def ask(req: AskRequest) -> AskResponse:
     trace = get_tracer().trace(name="ask", request_id=rid, input=req.query)
     tok = set_current_trace(trace)
     try:
-        out = await app.state.orchestrator.run(req.query, req.filters)
+        out = await app.state.orchestrator.run(req.query, req.filters, req.session_id)
     finally:
         reset_current_trace(tok)
     answer = out.get("answer", "")
@@ -139,6 +152,7 @@ async def ask(req: AskRequest) -> AskResponse:
         retrieval=out.get("retrieval", []),
         citations=out.get("citations", {}),
         steps=out.get("steps", []),
+        session_id=req.session_id,
         request_id=rid,
     )
 
@@ -153,7 +167,7 @@ async def ask_stream(req: AskRequest) -> StreamingResponse:
         trace = get_tracer().trace(name="ask_stream", request_id=rid, input=req.query)
         tok = set_current_trace(trace)
         try:
-            async for evt in app.state.orchestrator.stream(req.query, req.filters):
+            async for evt in app.state.orchestrator.stream(req.query, req.filters, req.session_id):
                 if evt.get("type") == "final":
                     evt["request_id"] = rid
                 yield f"data: {json.dumps(evt)}\n\n"

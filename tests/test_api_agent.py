@@ -34,15 +34,22 @@ class ScriptedProvider:
 @pytest.fixture
 def agent_client():
     _reset_buckets()
+    from src import memory
     provider = ScriptedProvider([
         ChatResult(tool_calls=[ToolCall("t1", "search", {"query": "4F"})]),
         ChatResult(text="Code 4F means low suction pressure [#1]."),
+        ChatResult(text="Replace the strainer [#1]."),
     ])
+    settings = Settings(_env_file=None, agent_mode="agent", enable_memory=True)
+    store = memory.SessionStore(settings)
+    memory.set_store(store)  # so /session/reset hits the same store
     app.state.retriever = FakeRetriever()
     app.state.orchestrator = Orchestrator(
-        app.state.retriever, settings=Settings(_env_file=None, agent_mode="agent"),
-        provider=provider)
-    return TestClient(app, raise_server_exceptions=False)
+        app.state.retriever, settings=settings, provider=provider, store=store)
+    client = TestClient(app, raise_server_exceptions=False)
+    client._store = store  # expose for assertions
+    yield client
+    memory.set_store(None)
 
 
 def test_agent_ask_returns_answer_steps_citations(agent_client):
@@ -67,3 +74,22 @@ def test_agent_stream_emits_tool_events(agent_client):
     tool_evt = next(e for e in events if e["type"] == "tool_call")
     assert tool_evt["tool"] == "search"
     assert events[-1]["request_id"]
+
+
+def test_multiturn_builds_history_and_echoes_session(agent_client):
+    r1 = agent_client.post("/ask", json={"query": "what is fault 4F?", "session_id": "sess-1"})
+    assert r1.status_code == 200 and r1.json()["session_id"] == "sess-1"
+    assert len(agent_client._store.get_history("sess-1")) == 2
+
+    r2 = agent_client.post("/ask", json={"query": "how do I fix it?", "session_id": "sess-1"})
+    assert r2.status_code == 200
+    hist = agent_client._store.get_history("sess-1")
+    assert len(hist) == 4 and hist[0]["content"] == "what is fault 4F?"
+
+
+def test_session_reset_clears_history(agent_client):
+    agent_client.post("/ask", json={"query": "what is fault 4F?", "session_id": "sess-2"})
+    assert agent_client._store.get_history("sess-2")
+    rr = agent_client.post("/session/reset", json={"session_id": "sess-2"})
+    assert rr.status_code == 200 and rr.json()["status"] == "reset"
+    assert agent_client._store.get_history("sess-2") == []
