@@ -55,3 +55,28 @@ def test_build_chunks_rejects_empty_dir(tmp_path):
     import pytest
     with pytest.raises(FileNotFoundError):
         build_chunks(tmp_path, use_contextual=False)
+
+
+def test_acl_for_maps_roles_and_sites():
+    from src.ingestion import _acl_for
+    acl_map = {"restricted.pdf": {"roles": ["eng"], "sites": ["siteA"]}}
+    assert _acl_for("restricted.pdf", acl_map) == {"acl_roles": ["eng"], "acl_sites": ["siteA"]}
+    assert _acl_for("public.pdf", acl_map) == {}  # unlisted = public
+
+
+def test_build_chunks_attaches_acl_from_sidecar(tmp_path, monkeypatch):
+    import src.ingestion as ing
+    (tmp_path / "restricted.pdf").write_bytes(b"%PDF fake")
+    monkeypatch.setattr(ing, "ACL_SIDECAR_PATH",
+                        _write(tmp_path / "acl.json",
+                               {"restricted.pdf": {"roles": ["eng"]}}))
+    doc = ParsedDocument("Manual", "restricted.pdf",
+                         [TextElement("Intro", "sensitive text", page=1)])
+    chunks = build_chunks(tmp_path, use_contextual=False, dispatcher=StubDispatcher(doc))
+    assert chunks[0].metadata["acl_roles"] == ["eng"]
+
+
+def _write(path, obj):
+    import json
+    path.write_text(json.dumps(obj), encoding="utf-8")
+    return path
