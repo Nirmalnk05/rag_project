@@ -122,3 +122,13 @@ def test_specs_exposed():
     reg = ToolRegistry(FakeRetriever())
     names = {t.name for t in reg.specs}
     assert names == {"search", "lookup_fault_code", "get_document_section", "list_documents"}
+
+
+async def test_search_source_line_includes_revision():
+    r = Retrieved("c1", "d", "Pump Manual", "Alarms", "4F text", "", 0.9, "rerank")
+    # attach version metadata via a chunk dict path: use get_document_section
+    chunks = [{"text": "4F procedure", "doc_title": "Pump Manual", "section": "Alarms",
+               "metadata": {"source_file": "p.pdf", "doc_version": "3", "doc_date": "2026-02-02"}}]
+    reg = ToolRegistry(FakeRetriever(chunks=chunks))
+    out = await reg.execute("get_document_section", {"source_file": "p.pdf", "section": "Alarms"})
+    assert "rev 3 2026-02-02" in out

@@ -176,12 +176,24 @@ class ToolRegistry:
     def _chunks(self) -> list[dict]:
         return getattr(self._r, "_chunks", [])
 
+    @staticmethod
+    def _rev_tag(meta: dict) -> str:
+        ver, date = meta.get("doc_version"), meta.get("doc_date")
+        if ver and date:
+            return f", rev {ver} {date}"
+        if ver:
+            return f", rev {ver}"
+        if date:
+            return f", {date}"
+        return ""
+
     def _format_and_record(self, chunks: list[dict]) -> str:
         lines = []
         for c in chunks:
             n = len(self.sources) + 1
             self.sources.append(c)
-            lines.append(f"[#{n}] ({c.get('doc_title','?')} > {c.get('section','?')})\n{c['text']}")
+            rev = self._rev_tag(c.get("metadata", {}))
+            lines.append(f"[#{n}] ({c.get('doc_title','?')} > {c.get('section','?')}{rev})\n{c['text']}")
         out = "\n\n".join(lines)
         limit = self._s.agent_max_tool_results_chars
         return out[:limit] + ("\n…(truncated)" if len(out) > limit else "")

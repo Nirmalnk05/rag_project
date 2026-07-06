@@ -202,6 +202,14 @@ sees — or gets an answer grounded in — documents they aren't cleared for.
 in SAP PM / Maximo / Fiix rather than in manuals. A `MockCMMSConnector`
 ([src/agent/cmms.py](src/agent/cmms.py)) ships for offline/demo use; it's the seam
 for a real connector.
+
+**Document freshness / versioning.** Revisions are declared in `data/versions.json`
+(`{"pump_v1.pdf": {"version": "1", "effective_date": "2024-01-01", "status":
+"superseded"}}`). Superseded revisions are **hidden from retrieval by default** so
+a technician can't be handed a stale procedure — a safety concern in maintenance;
+set `RETRIEVE_SUPERSEDED=true` for historical lookups. Active revisions carry their
+version + date into the cited source line (`… > Alarms, rev 3 2026-02-02`) so the
+answer reflects which revision it's grounded in.
 Agent mode's final answer is streamed as chunked tokens (genuine per-token
 streaming of an agent's tool-using final turn is a documented follow-up).
 
