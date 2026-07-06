@@ -6,7 +6,11 @@ point and a common result shape.
 from __future__ import annotations
 
 import asyncio
+import logging
+import random
 from typing import AsyncIterator
+
+_logger = logging.getLogger("rag.eval")
 
 from src.agent.loop import run_agent, stream_agent
 from src.cache import get_cache
@@ -68,6 +72,17 @@ class Orchestrator:
         faith = await check_faithfulness(answer, retrieval, provider=self._provider)
         return {"safety": safety, "faithfulness": faith}
 
+    def _maybe_sample(self, query: str, out: dict) -> None:
+        """Log a sampled fraction of answers for online-eval review."""
+        if self._s.online_eval_sample_rate <= 0:
+            return
+        if random.random() < self._s.online_eval_sample_rate:
+            from src.observability import log_event
+            log_event(_logger, "answer_sampled", query=query[:200],
+                      n_sources=len(out.get("retrieval", [])),
+                      citations_valid=out.get("citations", {}).get("valid"),
+                      grounded=out.get("faithfulness", {}).get("grounded"))
+
     def _full(self):
         if self._graph_full is None:
             self._graph_full = build_state_graph(self._r)
@@ -108,6 +123,7 @@ class Orchestrator:
             }
         out.update(await self._assess(query, out.get("answer", ""), out.get("retrieval", [])))
         out["cached"] = False
+        self._maybe_sample(query, out)
         if cacheable and out.get("answer"):
             await self._cache_store(query, {k: v for k, v in out.items() if k != "cached"}, access)
         if session_id and out.get("answer"):

@@ -203,6 +203,14 @@ in SAP PM / Maximo / Fiix rather than in manuals. A `MockCMMSConnector`
 ([src/agent/cmms.py](src/agent/cmms.py)) ships for offline/demo use; it's the seam
 for a real connector.
 
+**Feedback + online eval.** `POST /feedback` captures thumbs up/down (with
+optional comment, request/session id) to a JSONL store; `GET /feedback/summary`
+returns the tallies. `ONLINE_EVAL_SAMPLE_RATE` logs a sampled fraction of answers
+(with citation-validity + groundedness signals) for review. CI runs a
+retrieval-quality gate ([tests/test_retrieval_quality.py](tests/test_retrieval_quality.py))
+that asserts BM25 recall@k over a labeled set stays above threshold — no Docker or
+keys needed; full RAGAS scoring remains a separate key-requiring run.
+
 **Semantic answer cache.** With `ENABLE_SEMANTIC_CACHE=true`, a repeated or
 near-identical question (cosine ≥ `SEMANTIC_CACHE_THRESHOLD` on the query
 embedding) is served from cache without re-running the LLM — the response carries

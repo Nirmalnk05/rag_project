@@ -1,0 +1,6 @@
+[
+  {"query": "pump P-100 alarm code 4F", "expect_chunk": "c_pump"},
+  {"query": "chiller condenser fin cleaning coastal", "expect_chunk": "c_hvac"},
+  {"query": "earth fault cable gland winch motor", "expect_chunk": "c_incident"},
+  {"query": "bearing alignment tolerance dial indicator", "expect_chunk": "c_bearing"}
+]
