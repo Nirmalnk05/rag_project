@@ -69,6 +69,9 @@ class Settings(BaseSettings):
     # Access control (per-user retrieval ACLs)
     enable_acl: bool = False               # off = every chunk visible (dev default)
 
+    # Document freshness / versioning
+    retrieve_superseded: bool = False      # False = superseded revisions are hidden
+
     # CMMS / system-of-record connector (agent tool)
     enable_cmms: bool = False
     cmms_connector: str = "mock"           # mock | (extend with real connectors)

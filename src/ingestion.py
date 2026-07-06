@@ -25,6 +25,8 @@ CHUNK_STORE_PATH = Path("data/chunks.json")
 MANIFEST_PATH = Path("data/ingest_manifest.json")
 CONTEXT_CACHE_PATH = Path("data/context_cache.json")
 ACL_SIDECAR_PATH = Path("data/acl.json")   # {source_file: {roles: [...], sites: [...]}}
+# {source_file: {version, effective_date, status: active|superseded, supersedes: [...]}}
+VERSIONS_SIDECAR_PATH = Path("data/versions.json")
 
 
 def _acl_for(source_file: str, acl_map: dict) -> dict:
@@ -36,6 +38,16 @@ def _acl_for(source_file: str, acl_map: dict) -> dict:
     if entry.get("sites"):
         meta["acl_sites"] = list(entry["sites"])
     return meta
+
+
+def _version_for(source_file: str, versions_map: dict) -> dict:
+    """Return doc_version/doc_date/doc_status metadata (active if unlisted)."""
+    entry = versions_map.get(source_file) or {}
+    return {
+        "doc_version": entry.get("version", ""),
+        "doc_date": entry.get("effective_date", ""),
+        "doc_status": entry.get("status", "active"),
+    }
 
 __all__ = ["Chunk", "build_chunks", "run_ingestion", "_split_into_sections",
            "_windowed_chunks", "chunk_content_hash", "diff_manifest", "point_id_for"]
@@ -166,6 +178,7 @@ def build_chunks(docs_dir: Path, use_contextual: bool = True,
     context_cache = context_cache if context_cache is not None else {}
     dispatcher = dispatcher or Dispatcher()
     acl_map = _load_json(ACL_SIDECAR_PATH, {})
+    versions_map = _load_json(VERSIONS_SIDECAR_PATH, {})
     files = sorted(p for p in docs_dir.iterdir()
                    if p.is_file() and p.suffix.lower() in SUPPORTED_EXT)
     if not files:
@@ -195,7 +208,8 @@ def build_chunks(docs_dir: Path, use_contextual: bool = True,
                     embed_text=embed_text, section=el.section,
                     metadata={"source_file": path.name,
                               "element_type": element_type, "page": page,
-                              **_acl_for(path.name, acl_map)},
+                              **_acl_for(path.name, acl_map),
+                              **_version_for(path.name, versions_map)},
                 ))
     return chunks
 

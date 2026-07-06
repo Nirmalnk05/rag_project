@@ -80,3 +80,26 @@ def _write(path, obj):
     import json
     path.write_text(json.dumps(obj), encoding="utf-8")
     return path
+
+
+def test_version_for_maps_metadata():
+    from src.ingestion import _version_for
+    vm = {"m.pdf": {"version": "3", "effective_date": "2026-01-01", "status": "superseded"}}
+    assert _version_for("m.pdf", vm) == {
+        "doc_version": "3", "doc_date": "2026-01-01", "doc_status": "superseded"}
+    # unlisted defaults to active
+    assert _version_for("other.pdf", vm) == {
+        "doc_version": "", "doc_date": "", "doc_status": "active"}
+
+
+def test_build_chunks_attaches_version_from_sidecar(tmp_path, monkeypatch):
+    import src.ingestion as ing
+    (tmp_path / "m.pdf").write_bytes(b"%PDF fake")
+    monkeypatch.setattr(ing, "VERSIONS_SIDECAR_PATH",
+                        _write(tmp_path / "versions.json",
+                               {"m.pdf": {"version": "2", "status": "active",
+                                          "effective_date": "2026-02-02"}}))
+    doc = ParsedDocument("Manual", "m.pdf", [TextElement("Intro", "text", page=1)])
+    chunks = build_chunks(tmp_path, use_contextual=False, dispatcher=StubDispatcher(doc))
+    assert chunks[0].metadata["doc_version"] == "2"
+    assert chunks[0].metadata["doc_status"] == "active"
