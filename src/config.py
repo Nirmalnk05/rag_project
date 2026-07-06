@@ -49,6 +49,8 @@ class Settings(BaseSettings):
     # Security
     api_keys: str = ""       # comma-separated; empty = auth disabled
     rate_limit_rpm: int = 30
+    rate_limit_backend: str = "memory"   # memory | redis
+    redis_url: str = ""                  # required when rate_limit_backend=redis
 
     # Guardrails
     redact_pii_in_answers: bool = False
@@ -108,6 +110,11 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"PARSE_BACKEND=cloud but no {self.cloud_parse_provider} credentials "
                 "are set. Configure the key, or use PARSE_BACKEND=local|hybrid."
+            )
+        if self.rate_limit_backend == "redis" and not self.redis_url:
+            raise ValueError(
+                "RATE_LIMIT_BACKEND=redis requires REDIS_URL. "
+                "Set it, or use RATE_LIMIT_BACKEND=memory (single-instance)."
             )
 
 

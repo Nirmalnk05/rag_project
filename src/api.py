@@ -87,11 +87,22 @@ class AskResponse(BaseModel):
 
 @app.get("/health")
 def health() -> dict:
+    """Liveness: the process is up."""
     return {
         "status": "ok",
         "retriever_loaded": getattr(app.state, "retriever", None) is not None,
         "provider": get_settings().llm_provider,
     }
+
+
+@app.get("/ready")
+def ready():
+    """Readiness: models + orchestrator are loaded and the app can serve."""
+    loaded = (getattr(app.state, "retriever", None) is not None
+              and getattr(app.state, "orchestrator", None) is not None)
+    if not loaded:
+        return JSONResponse(status_code=503, content={"status": "not_ready"})
+    return {"status": "ready"}
 
 
 @app.get("/")

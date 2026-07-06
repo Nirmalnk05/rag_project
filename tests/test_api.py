@@ -53,6 +53,21 @@ def test_health(client):
     assert r.status_code == 200 and r.json()["status"] == "ok"
 
 
+def test_ready_when_loaded(client):
+    r = client.get("/ready")
+    assert r.status_code == 200 and r.json()["status"] == "ready"
+
+
+def test_ready_503_when_not_loaded(monkeypatch):
+    from src.api import app as fresh_app
+    # simulate pre-startup: clear loaded state
+    monkeypatch.delattr(fresh_app.state, "orchestrator", raising=False)
+    monkeypatch.delattr(fresh_app.state, "retriever", raising=False)
+    c = TestClient(fresh_app, raise_server_exceptions=False)
+    r = c.get("/ready")
+    assert r.status_code == 503 and r.json()["status"] == "not_ready"
+
+
 def test_ask_returns_answer_citations_and_request_id(client):
     r = client.post("/ask", json={"query": "what is alarm 4F?"})
     assert r.status_code == 200
