@@ -84,6 +84,10 @@ class Settings(BaseSettings):
     # Guardrails backend
     guardrails_backend: str = "heuristic"  # heuristic | external
 
+    # Feedback + online eval
+    feedback_path: str = "data/feedback.jsonl"
+    online_eval_sample_rate: float = 0.0   # fraction of answers logged for review
+
     # CMMS / system-of-record connector (agent tool)
     enable_cmms: bool = False
     cmms_connector: str = "mock"           # mock | (extend with real connectors)
