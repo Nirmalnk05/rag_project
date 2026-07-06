@@ -57,3 +57,35 @@ def test_rrf_orders_by_fused_score():
 def test_filter_keys_restricted(retriever):
     with pytest.raises(ValueError, match="unsupported filter"):
         retriever.sparse_search("pump", top_k=3, filters={"evil": "x"})
+
+
+def test_sparse_search_enforces_acl(tmp_path):
+    from src.access import AccessContext
+    def _c(cid, text, meta):
+        return {"id": cid, "doc_id": "d", "doc_title": "T", "section": "S",
+                "text": text, "context": "", "embed_text": text, "metadata": meta}
+
+    chunks = [
+        _c("c1", "public pump text", {"source_file": "a.md"}),               # public
+        _c("c2", "restricted pump text", {"source_file": "b.md", "acl_roles": ["eng"]}),
+        # fillers so 'pump' is discriminating (BM25 IDF stays positive)
+        _c("f1", "chiller condenser cleaning", {"source_file": "f1.md"}),
+        _c("f2", "bearing alignment tolerance", {"source_file": "f2.md"}),
+        _c("f3", "earth fault cable gland", {"source_file": "f3.md"}),
+    ]
+    path = tmp_path / "chunks.json"
+    path.write_text(json.dumps(chunks), encoding="utf-8")
+    r = Retriever(chunks_path=path, load_models=False, qdrant_client=object())
+
+    tech = AccessContext(roles=frozenset({"tech"}))
+    out = r.sparse_search("pump", top_k=5, access=tech)
+    ids = {o.chunk_id for o in out}
+    assert ids == {"c1"}  # restricted chunk hidden from tech
+
+    admin = AccessContext.admin()
+    ids_admin = {o.chunk_id for o in r.sparse_search("pump", top_k=5, access=admin)}
+    assert ids_admin == {"c1", "c2"}  # admin sees all
+
+    # access=None (ACL disabled) → all visible
+    ids_none = {o.chunk_id for o in r.sparse_search("pump", top_k=5)}
+    assert ids_none == {"c1", "c2"}

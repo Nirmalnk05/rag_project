@@ -112,8 +112,10 @@ class Retriever:
 
     # ---------- single-source retrievers (sync; run via to_thread) ----------
 
-    def dense_search(self, query: str, top_k: int, filters: dict | None = None) -> list[Retrieved]:
+    def dense_search(self, query: str, top_k: int, filters: dict | None = None,
+                     access=None) -> list[Retrieved]:
         _validate_filters(filters)
+        from src.access import acl_visible
         s = get_settings()
         with self._embed_lock:
             vec = self._embedder.encode(query, normalize_embeddings=True).tolist()
@@ -134,6 +136,8 @@ class Retriever:
         out = []
         for h in res.points:
             p = h.payload or {}
+            if not acl_visible(p.get("metadata", {}), access):
+                continue
             out.append(Retrieved(
                 chunk_id=p.get("id", ""), doc_id=p.get("doc_id", ""),
                 doc_title=p.get("doc_title", ""), section=p.get("section", ""),
@@ -142,8 +146,10 @@ class Retriever:
             ))
         return out
 
-    def sparse_search(self, query: str, top_k: int, filters: dict | None = None) -> list[Retrieved]:
+    def sparse_search(self, query: str, top_k: int, filters: dict | None = None,
+                      access=None) -> list[Retrieved]:
         _validate_filters(filters)
+        from src.access import acl_visible
         scores = self._bm25.get_scores(_tokenize(query))
         ranked = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
         out: list[Retrieved] = []
@@ -152,6 +158,8 @@ class Retriever:
                 break
             c = self._chunks[i]
             if not _matches_filters(c, filters):
+                continue
+            if not acl_visible(c.get("metadata", {}), access):
                 continue
             out.append(_from_chunk(c, float(scores[i]), "bm25"))
         return out
@@ -182,12 +190,14 @@ class Retriever:
 
     # ---------- public ----------
 
-    async def hybrid_retrieve(self, query: str, filters: dict | None = None) -> list[Retrieved]:
-        """sparse ∥ dense → RRF → rerank → top_k. Sparse+dense run in parallel."""
+    async def hybrid_retrieve(self, query: str, filters: dict | None = None,
+                              access=None) -> list[Retrieved]:
+        """sparse ∥ dense → RRF → rerank → top_k. Sparse+dense run in parallel.
+        `access` (AccessContext) filters out chunks the principal may not see."""
         s = get_settings()
         sparse, dense = await asyncio.gather(
-            asyncio.to_thread(self.sparse_search, query, s.top_k_sparse, filters),
-            asyncio.to_thread(self.dense_search, query, s.top_k_dense, filters),
+            asyncio.to_thread(self.sparse_search, query, s.top_k_sparse, filters, access),
+            asyncio.to_thread(self.dense_search, query, s.top_k_dense, filters, access),
         )
         fused = self.reciprocal_rank_fusion([sparse, dense])
         head = fused[: max(s.top_k_sparse, s.top_k_dense)]
