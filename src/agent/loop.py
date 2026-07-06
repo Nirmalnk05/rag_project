@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from typing import AsyncIterator
 
-from src.agent.prompts import AGENT_SYSTEM
+from src.agent.prompts import agent_system
 from src.agent.tools import ToolRegistry
 from src.citations import verify_citations
 from src.config import get_settings
@@ -43,7 +43,7 @@ async def stream_agent(query, retriever, *, filters=None, settings=None, provide
     user_content = query
     if filters:
         user_content += f"\n\n(Apply these retrieval filters when searching: {filters})"
-    messages = [{"role": "system", "content": AGENT_SYSTEM}]
+    messages = [{"role": "system", "content": agent_system()}]
     # prior conversation turns (clean user/assistant only) go before the new query
     for turn in (history or []):
         messages.append({"role": turn["role"], "content": turn["content"]})

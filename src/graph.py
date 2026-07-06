@@ -40,35 +40,12 @@ class GraphState(TypedDict, total=False):
     citations: dict
 
 
-REWRITE_SYSTEM = """You rewrite user queries to improve retrieval over a maintenance-knowledge corpus.
-Rules:
-- Expand acronyms and part codes (e.g. "P-100" stays, but "PdM" becomes "predictive maintenance").
-- If the query has multiple parts, list the most important phrasing first.
-- Preserve all part numbers, error codes, and proper nouns verbatim.
-- Output ONLY the rewritten query, nothing else."""
+from src.prompts import get_prompt
 
-REWRITE_WITH_HINT_SYSTEM = """You rewrite a user query to improve retrieval. A previous attempt failed.
-
-Previous query: {prev}
-Why it failed: {reason}
-
-Rewrite the original query so the missing information is more retrievable.
-Output ONLY the rewritten query, nothing else."""
-
-GRADER_SYSTEM = """You judge whether retrieved context contains enough information to answer a user's question.
-
-Output strictly valid JSON in this schema:
-{"verdict": "sufficient" | "insufficient", "reason": "<one sentence>"}
-
-Be strict. If the answer would require speculation or facts outside the context, return "insufficient"."""
-
-GENERATE_SYSTEM = """You answer maintenance questions using ONLY the provided context.
-
-Rules:
-- Every factual claim MUST be followed by a citation in square brackets, e.g. [#3].
-- If the context is insufficient, say so explicitly and stop.
-- Be concise and operational — bullet points for procedures, prose for explanations.
-- Do not invent part numbers, error codes, or procedures not in the context."""
+REWRITE_SYSTEM = get_prompt("rewrite")
+REWRITE_WITH_HINT_SYSTEM = get_prompt("rewrite_hint")
+GRADER_SYSTEM = get_prompt("grader")
+GENERATE_SYSTEM = get_prompt("generate")
 
 
 # ---------- node functions ----------
