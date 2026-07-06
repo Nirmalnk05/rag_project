@@ -46,17 +46,17 @@ class Orchestrator:
         return self._graph_pre
 
     async def run(self, query: str, filters: dict | None = None,
-                  session_id: str = "") -> dict:
+                  session_id: str = "", access=None) -> dict:
         history = self._store.get_history(session_id)
         if self.mode == "agent":
             out = await run_agent(query, self._r, filters=filters,
                                   settings=self._s, provider=self._provider,
-                                  history=history)
+                                  history=history, access=access)
             out.setdefault("rewritten", "")
             out.setdefault("grade", "")
         else:
             state = await run_graph(self._full(),
-                                    _with_history_preamble(query, history), filters)
+                                    _with_history_preamble(query, history), filters, access)
             out = {
                 "answer": state.get("answer", ""),
                 "retrieval": state.get("retrieval", []),
@@ -70,14 +70,15 @@ class Orchestrator:
         return out
 
     async def stream(self, query: str, filters: dict | None = None,
-                     session_id: str = "") -> AsyncIterator[dict]:
+                     session_id: str = "", access=None) -> AsyncIterator[dict]:
         history = self._store.get_history(session_id)
         answer_parts: list[str] = []
         if self.mode == "agent":
             gen = stream_agent(query, self._r, filters=filters, settings=self._s,
-                               provider=self._provider, history=history)
+                               provider=self._provider, history=history, access=access)
         else:
-            gen = stream_answer(self._pre(), _with_history_preamble(query, history), filters)
+            gen = stream_answer(self._pre(), _with_history_preamble(query, history),
+                                filters, access)
         async for evt in gen:
             if evt.get("type") == "token":
                 answer_parts.append(evt.get("text", ""))

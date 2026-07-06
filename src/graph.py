@@ -32,6 +32,7 @@ class GraphState(TypedDict, total=False):
     rewritten: str
     retries: int
     filters: dict
+    access: object
     retrieval: list[dict]
     grade: str
     grade_reason: str
@@ -97,7 +98,8 @@ def _make_retrieve_node(retriever: Retriever):
     async def retrieve_node(state: GraphState) -> GraphState:
         with node_span("retrieve"):
             q = state.get("rewritten") or state["query"]
-            results = await retriever.hybrid_retrieve(q, state.get("filters") or None)
+            results = await retriever.hybrid_retrieve(
+                q, state.get("filters") or None, state.get("access"))
             dicts = [r.to_dict() for r in results]
             clean, flagged = screen_chunks(dicts)
             if flagged:
@@ -204,9 +206,10 @@ def build_state_graph(retriever: Retriever, *, include_generate: bool = True):
     return g.compile()
 
 
-async def run_graph(graph, query: str, filters: dict | None = None) -> GraphState:
+async def run_graph(graph, query: str, filters: dict | None = None, access=None) -> GraphState:
     return await graph.ainvoke({
-        "query": query, "retries": _settings.max_retries, "filters": filters or {},
+        "query": query, "retries": _settings.max_retries,
+        "filters": filters or {}, "access": access,
     })
 
 
@@ -224,11 +227,11 @@ def run_sync(retriever: Retriever, query: str) -> GraphState:
     return asyncio.run(run_graph(g, query))
 
 
-async def stream_answer(pre_generate_graph, query: str,
-                        filters: dict | None = None) -> AsyncIterator[dict]:
+async def stream_answer(pre_generate_graph, query: str, filters: dict | None = None,
+                        access=None) -> AsyncIterator[dict]:
     """Run rewrite/retrieve/grade via the pre-generate graph, then STREAM the
     final answer. Yields typed event dicts; 'final' carries retrieval + citations."""
-    state = await run_graph(pre_generate_graph, query, filters)
+    state = await run_graph(pre_generate_graph, query, filters, access)
 
     yield {"type": "rewrite", "rewritten": state.get("rewritten", "")}
     yield {"type": "grade", "verdict": state.get("grade", ""),

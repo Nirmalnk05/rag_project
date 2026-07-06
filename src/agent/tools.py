@@ -65,9 +65,10 @@ TOOL_SPECS = [
 
 
 class ToolRegistry:
-    def __init__(self, retriever, settings: Settings | None = None) -> None:
+    def __init__(self, retriever, settings: Settings | None = None, access=None) -> None:
         self._r = retriever
         self._s = settings or get_settings()
+        self._access = access
         self.sources: list[dict] = []   # accumulated across the agent run
 
     @property
@@ -101,7 +102,7 @@ class ToolRegistry:
     async def _search(self, query: str, filters: dict | None, top_k: int | None) -> str:
         if not query.strip():
             return "Error: empty query."
-        results = await self._r.hybrid_retrieve(query, filters or None)
+        results = await self._r.hybrid_retrieve(query, filters or None, self._access)
         dicts = [r.to_dict() for r in results]
         clean, flagged = screen_chunks(dicts)
         if flagged:
@@ -113,16 +114,21 @@ class ToolRegistry:
         return self._format_and_record(clean)
 
     def _get_section(self, source_file: str, section: str) -> str:
+        from src.access import acl_visible
         matched = [c for c in self._chunks()
                    if c.get("metadata", {}).get("source_file") == source_file
-                   and c.get("section") == section]
+                   and c.get("section") == section
+                   and acl_visible(c.get("metadata", {}), self._access)]
         if not matched:
             return f"No section '{section}' found in {source_file}."
         return self._format_and_record(matched)
 
     def _list_documents(self) -> str:
+        from src.access import acl_visible
         seen = {}
         for c in self._chunks():
+            if not acl_visible(c.get("metadata", {}), self._access):
+                continue
             sf = c.get("metadata", {}).get("source_file", "?")
             seen[sf] = c.get("doc_title", "?")
         return "\n".join(f"- {title} ({sf})" for sf, title in sorted(seen.items()))

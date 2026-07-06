@@ -22,7 +22,7 @@ class FakeRetriever:
     def __init__(self):
         self.queries = []
 
-    async def hybrid_retrieve(self, query, filters=None):
+    async def hybrid_retrieve(self, query, filters=None, access=None):
         self.queries.append((query, filters))
         return [Retrieved("c1", "d1", "Pump Manual", "Alarms",
                           "Code 4F means low suction pressure.", "", 0.9, "rerank")]
@@ -71,7 +71,7 @@ async def test_pre_generate_graph_stops_before_answer(fake_llm):
 
 async def test_injected_chunk_is_dropped(fake_llm):
     class EvilRetriever(FakeRetriever):
-        async def hybrid_retrieve(self, query, filters=None):
+        async def hybrid_retrieve(self, query, filters=None, access=None):
             return [
                 Retrieved("c1", "d1", "T", "S", "Normal pump text.", "", 0.9, "rerank"),
                 Retrieved("c2", "d1", "T", "S",

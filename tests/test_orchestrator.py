@@ -11,7 +11,7 @@ class FakeRetriever:
         self._results = results or []
         self._chunks = []
 
-    async def hybrid_retrieve(self, query, filters=None):
+    async def hybrid_retrieve(self, query, filters=None, access=None):
         return self._results
 
 
@@ -104,7 +104,7 @@ async def test_no_session_id_does_not_store():
 
 
 async def test_pipeline_mode_stream_delegates(monkeypatch):
-    async def fake_stream_answer(graph, query, filters=None):
+    async def fake_stream_answer(graph, query, filters=None, access=None):
         yield {"type": "rewrite", "rewritten": "rw"}
         yield {"type": "final", "retrieval": []}
 

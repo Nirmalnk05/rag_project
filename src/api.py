@@ -129,16 +129,25 @@ def _guard(query: str) -> None:
         raise HTTPException(status_code=400, detail=f"query rejected: {reason}")
 
 
+def _access_for(request: Request):
+    """Principal for ACL filtering, or None when ACLs are disabled (dev)."""
+    if not get_settings().enable_acl:
+        return None
+    from src.access import AccessContext
+    return AccessContext.from_headers(request.headers)
+
+
 @app.post("/ask", response_model=AskResponse,
           dependencies=[Depends(require_api_key), Depends(rate_limiter)])
-async def ask(req: AskRequest) -> AskResponse:
+async def ask(req: AskRequest, http_request: Request) -> AskResponse:
     _guard(req.query)
     settings = get_settings()
     rid = request_id_var.get()
+    access = _access_for(http_request)
     trace = get_tracer().trace(name="ask", request_id=rid, input=req.query)
     tok = set_current_trace(trace)
     try:
-        out = await app.state.orchestrator.run(req.query, req.filters, req.session_id)
+        out = await app.state.orchestrator.run(req.query, req.filters, req.session_id, access)
     finally:
         reset_current_trace(tok)
     answer = out.get("answer", "")
@@ -159,15 +168,17 @@ async def ask(req: AskRequest) -> AskResponse:
 
 @app.post("/ask/stream",
           dependencies=[Depends(require_api_key), Depends(rate_limiter)])
-async def ask_stream(req: AskRequest) -> StreamingResponse:
+async def ask_stream(req: AskRequest, http_request: Request) -> StreamingResponse:
     _guard(req.query)
     rid = request_id_var.get()
+    access = _access_for(http_request)
 
     async def event_generator() -> AsyncIterator[str]:
         trace = get_tracer().trace(name="ask_stream", request_id=rid, input=req.query)
         tok = set_current_trace(trace)
         try:
-            async for evt in app.state.orchestrator.stream(req.query, req.filters, req.session_id):
+            async for evt in app.state.orchestrator.stream(req.query, req.filters,
+                                                           req.session_id, access):
                 if evt.get("type") == "final":
                     evt["request_id"] = rid
                 yield f"data: {json.dumps(evt)}\n\n"

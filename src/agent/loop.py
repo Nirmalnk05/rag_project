@@ -30,7 +30,7 @@ def _chunk_tokens(text: str):
 
 
 async def stream_agent(query, retriever, *, filters=None, settings=None, provider=None,
-                       history=None) -> AsyncIterator[dict]:
+                       history=None, access=None) -> AsyncIterator[dict]:
     s = settings or get_settings()
     provider = provider or get_provider()
 
@@ -39,7 +39,7 @@ async def stream_agent(query, retriever, *, filters=None, settings=None, provide
         yield {"type": "error", "message": f"query rejected: {reason}"}
         return
 
-    registry = ToolRegistry(retriever, s)
+    registry = ToolRegistry(retriever, s, access=access)
     user_content = query
     if filters:
         user_content += f"\n\n(Apply these retrieval filters when searching: {filters})"
@@ -91,13 +91,13 @@ async def stream_agent(query, retriever, *, filters=None, settings=None, provide
 
 
 async def run_agent(query, retriever, *, filters=None, settings=None, provider=None,
-                    history=None) -> dict:
+                    history=None, access=None) -> dict:
     """Collect the streamed events into a single result (for /ask and eval)."""
     answer_parts: list[str] = []
     final: dict | None = None
     error: str | None = None
-    async for evt in stream_agent(query, retriever, filters=filters,
-                                  settings=settings, provider=provider, history=history):
+    async for evt in stream_agent(query, retriever, filters=filters, settings=settings,
+                                  provider=provider, history=history, access=access):
         t = evt["type"]
         if t == "token":
             answer_parts.append(evt["text"])

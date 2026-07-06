@@ -11,7 +11,7 @@ class FakeRetriever:
         self._results = results
         self._chunks = []
 
-    async def hybrid_retrieve(self, query, filters=None):
+    async def hybrid_retrieve(self, query, filters=None, access=None):
         return self._results
 
 

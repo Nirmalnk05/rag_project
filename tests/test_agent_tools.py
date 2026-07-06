@@ -10,7 +10,7 @@ class FakeRetriever:
         self._chunks = chunks or []
         self.calls = []
 
-    async def hybrid_retrieve(self, query, filters=None):
+    async def hybrid_retrieve(self, query, filters=None, access=None):
         self.calls.append((query, filters))
         return self._results
 
@@ -82,6 +82,40 @@ async def test_list_documents():
 async def test_unknown_tool():
     reg = ToolRegistry(FakeRetriever())
     assert "unknown tool" in await reg.execute("nope", {})
+
+
+async def test_search_passes_access_to_retriever():
+    from src.access import AccessContext
+
+    class AccessRecordingRetriever(FakeRetriever):
+        def __init__(self):
+            super().__init__(results=[_r("x")])
+            self.seen_access = "unset"
+
+        async def hybrid_retrieve(self, query, filters=None, access=None):
+            self.seen_access = access
+            return self._results
+
+    ctx = AccessContext(roles=frozenset({"tech"}))
+    fr = AccessRecordingRetriever()
+    reg = ToolRegistry(fr, access=ctx)
+    await reg.execute("search", {"query": "pump"})
+    assert fr.seen_access is ctx
+
+
+async def test_get_section_and_list_respect_acl():
+    from src.access import AccessContext
+    chunks = [
+        {"text": "public", "doc_title": "Pub", "section": "S",
+         "metadata": {"source_file": "pub.md"}},
+        {"text": "secret", "doc_title": "Sec", "section": "S",
+         "metadata": {"source_file": "sec.md", "acl_roles": ["eng"]}},
+    ]
+    tech = ToolRegistry(FakeRetriever(chunks=chunks), access=AccessContext(roles=frozenset({"tech"})))
+    docs = await tech.execute("list_documents", {})
+    assert "pub.md" in docs and "sec.md" not in docs
+    blocked = await tech.execute("get_document_section", {"source_file": "sec.md", "section": "S"})
+    assert "No section" in blocked
 
 
 def test_specs_exposed():
