@@ -29,8 +29,8 @@ def _chunk_tokens(text: str):
         yield word + " "
 
 
-async def stream_agent(query, retriever, *, filters=None, settings=None, provider=None
-                       ) -> AsyncIterator[dict]:
+async def stream_agent(query, retriever, *, filters=None, settings=None, provider=None,
+                       history=None) -> AsyncIterator[dict]:
     s = settings or get_settings()
     provider = provider or get_provider()
 
@@ -43,8 +43,11 @@ async def stream_agent(query, retriever, *, filters=None, settings=None, provide
     user_content = query
     if filters:
         user_content += f"\n\n(Apply these retrieval filters when searching: {filters})"
-    messages = [{"role": "system", "content": AGENT_SYSTEM},
-                {"role": "user", "content": user_content}]
+    messages = [{"role": "system", "content": AGENT_SYSTEM}]
+    # prior conversation turns (clean user/assistant only) go before the new query
+    for turn in (history or []):
+        messages.append({"role": turn["role"], "content": turn["content"]})
+    messages.append({"role": "user", "content": user_content})
     steps: list[dict] = []
     final_text = ""
 
@@ -87,13 +90,14 @@ async def stream_agent(query, retriever, *, filters=None, settings=None, provide
            "citations": citations, "steps": steps}
 
 
-async def run_agent(query, retriever, *, filters=None, settings=None, provider=None) -> dict:
+async def run_agent(query, retriever, *, filters=None, settings=None, provider=None,
+                    history=None) -> dict:
     """Collect the streamed events into a single result (for /ask and eval)."""
     answer_parts: list[str] = []
     final: dict | None = None
     error: str | None = None
     async for evt in stream_agent(query, retriever, filters=filters,
-                                  settings=settings, provider=provider):
+                                  settings=settings, provider=provider, history=history):
         t = evt["type"]
         if t == "token":
             answer_parts.append(evt["text"])
