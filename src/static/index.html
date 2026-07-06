@@ -43,6 +43,7 @@
   <div id="cfg">
     <input id="apikey" placeholder="X-API-Key (if auth enabled)">
     <input id="ftitle" placeholder="filter: doc_title (optional)">
+    <button id="newchat" type="button" title="Start a new conversation">New chat</button>
   </div>
   <div id="transcript"></div>
   <form id="f">
@@ -55,6 +56,25 @@
 const $ = (id) => document.getElementById(id);
 $("apikey").value = localStorage.getItem("rag_api_key") || "";
 $("apikey").addEventListener("change", e => localStorage.setItem("rag_api_key", e.target.value));
+
+// One conversation per browser session; "New chat" rotates it.
+function newSessionId() {
+  const sid = (crypto.randomUUID ? crypto.randomUUID() : "s-" + Date.now() + Math.random());
+  sessionStorage.setItem("rag_session_id", sid);
+  return sid;
+}
+let sessionId = sessionStorage.getItem("rag_session_id") || newSessionId();
+
+$("newchat").addEventListener("click", async () => {
+  const headers = {"Content-Type": "application/json"};
+  const key = $("apikey").value.trim();
+  if (key) headers["X-API-Key"] = key;
+  try { await fetch("/session/reset", {method: "POST", headers,
+    body: JSON.stringify({session_id: sessionId})}); } catch (e) {}
+  sessionId = newSessionId();
+  $("transcript").innerHTML = "";
+  $("sources").innerHTML = '<div class="meta">Sources appear here per answer.</div>';
+});
 
 function el(tag, cls, text) {
   const n = document.createElement(tag);
@@ -103,7 +123,7 @@ $("f").addEventListener("submit", async (e) => {
   let resp;
   try {
     resp = await fetch("/ask/stream", {method: "POST", headers,
-      body: JSON.stringify({query: q, filters})});
+      body: JSON.stringify({query: q, filters, session_id: sessionId})});
   } catch (err) {
     meta.textContent = "network error"; meta.classList.add("err"); return;
   }

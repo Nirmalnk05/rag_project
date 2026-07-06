@@ -179,6 +179,14 @@ Set `AGENT_MODE` to choose how a query is answered:
 
 Both modes share retrieval, guardrails, citation verification, observability,
 auth, and the chat UI; the [orchestrator](src/orchestrator.py) dispatches by mode.
+
+**Conversation memory (multi-turn).** Pass a `session_id` on `/ask` (the chat UI
+generates one per browser session) and prior turns are threaded into the next
+answer, so follow-ups like "and how do I fix it?" resolve against earlier context.
+History is capped (`MEMORY_MAX_TURNS`) with a TTL and stored in-process
+(`MEMORY_BACKEND=memory`) or shared across replicas (`redis`). `POST /session/reset`
+or the UI's "New chat" button clears it. Only clean user↔assistant turns are
+kept — never the agent's tool-call scratch messages.
 Agent mode's final answer is streamed as chunked tokens (genuine per-token
 streaming of an agent's tool-using final turn is a documented follow-up).
 
