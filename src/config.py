@@ -72,6 +72,10 @@ class Settings(BaseSettings):
     # Document freshness / versioning
     retrieve_superseded: bool = False      # False = superseded revisions are hidden
 
+    # Answer safety + faithfulness
+    enable_safety_escalation: bool = True  # prepend safety notices for high-risk topics
+    enable_faithfulness_check: bool = False  # extra LLM-judge call per answer
+
     # CMMS / system-of-record connector (agent tool)
     enable_cmms: bool = False
     cmms_connector: str = "mock"           # mock | (extend with real connectors)
