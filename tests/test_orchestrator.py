@@ -92,6 +92,46 @@ async def test_session_history_roundtrips_agent_mode():
     assert hist[1]["content"] == "Low pressure [#1]."
 
 
+async def test_semantic_cache_serves_second_identical_query():
+    from src.cache import SemanticCache
+
+    class EmbedRetriever(FakeRetriever):
+        def embed_query(self, query):
+            return [1.0, 0.0]  # identical vector → cache hit on repeat
+
+    retr = EmbedRetriever([Retrieved("c1", "d", "P", "S", "text", "", 0.9, "rerank")])
+    provider = ScriptedProvider([ChatResult(text="the answer [#1]")])
+    cache = SemanticCache(Settings(_env_file=None, enable_semantic_cache=True,
+                                   semantic_cache_threshold=0.95))
+    orch = Orchestrator(retr, settings=Settings(_env_file=None, agent_mode="agent",
+                                                enable_semantic_cache=True),
+                        provider=provider, cache=cache)
+    out1 = await orch.run("what is 4F?")
+    assert out1["cached"] is False and provider.calls == 1
+    out2 = await orch.run("what is 4F?")   # served from cache
+    assert out2["cached"] is True and out2["answer"] == "the answer [#1]"
+    assert provider.calls == 1             # LLM not called again
+
+
+async def test_cache_skipped_when_acl_on():
+    from src.access import AccessContext
+    from src.cache import SemanticCache
+
+    class EmbedRetriever(FakeRetriever):
+        def embed_query(self, query):
+            return [1.0, 0.0]
+
+    retr = EmbedRetriever([Retrieved("c1", "d", "P", "S", "t", "", 0.9, "rerank")])
+    provider = ScriptedProvider([ChatResult(text="a1"), ChatResult(text="a2")])
+    cache = SemanticCache(Settings(_env_file=None, enable_semantic_cache=True))
+    orch = Orchestrator(retr, settings=Settings(_env_file=None, agent_mode="agent",
+                                                enable_semantic_cache=True),
+                        provider=provider, cache=cache)
+    await orch.run("q", access=AccessContext(roles=frozenset({"tech"})))
+    await orch.run("q", access=AccessContext(roles=frozenset({"tech"})))
+    assert provider.calls == 2  # no cache reuse under ACL
+
+
 async def test_no_session_id_does_not_store():
     from src.memory import SessionStore
     retr = FakeRetriever([Retrieved("c1", "d", "P", "S", "t", "", 0.9, "rerank")])

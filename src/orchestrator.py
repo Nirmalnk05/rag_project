@@ -5,9 +5,11 @@ point and a common result shape.
 """
 from __future__ import annotations
 
+import asyncio
 from typing import AsyncIterator
 
 from src.agent.loop import run_agent, stream_agent
+from src.cache import get_cache
 from src.config import get_settings
 from src.faithfulness import check_faithfulness
 from src.graph import build_state_graph, run_graph, stream_answer
@@ -25,13 +27,36 @@ def _with_history_preamble(query: str, history: list[dict]) -> str:
 
 class Orchestrator:
     def __init__(self, retriever, *, settings=None, provider=None,
-                 graph_full=None, graph_pre=None, store=None) -> None:
+                 graph_full=None, graph_pre=None, store=None, cache=None) -> None:
         self._r = retriever
         self._s = settings or get_settings()
         self._provider = provider
         self._graph_full = graph_full
         self._graph_pre = graph_pre
         self._store = store if store is not None else get_store(self._s)
+        self._cache = cache if cache is not None else get_cache(self._s)
+
+    def _cache_active(self, access) -> bool:
+        # never serve cached answers across principals when ACLs are enforced
+        return self._cache.enabled and access is None
+
+    async def _cache_lookup(self, query: str, access):
+        if not self._cache_active(access):
+            return None
+        try:
+            vec = await asyncio.to_thread(self._r.embed_query, query)
+        except Exception:
+            return None
+        return self._cache.get(vec)
+
+    async def _cache_store(self, query: str, entry: dict, access) -> None:
+        if not self._cache_active(access):
+            return
+        try:
+            vec = await asyncio.to_thread(self._r.embed_query, query)
+            self._cache.put(vec, entry)
+        except Exception:
+            pass
 
     @property
     def mode(self) -> str:
@@ -56,6 +81,14 @@ class Orchestrator:
     async def run(self, query: str, filters: dict | None = None,
                   session_id: str = "", access=None) -> dict:
         history = self._store.get_history(session_id)
+        cacheable = not history and not filters
+        if cacheable:
+            hit = await self._cache_lookup(query, access)
+            if hit is not None:
+                out = {**hit, "cached": True}
+                if session_id and out.get("answer"):
+                    self._store.append(session_id, query, out["answer"])
+                return out
         if self.mode == "agent":
             out = await run_agent(query, self._r, filters=filters,
                                   settings=self._s, provider=self._provider,
@@ -74,6 +107,9 @@ class Orchestrator:
                 "grade": state.get("grade", ""),
             }
         out.update(await self._assess(query, out.get("answer", ""), out.get("retrieval", [])))
+        out["cached"] = False
+        if cacheable and out.get("answer"):
+            await self._cache_store(query, {k: v for k, v in out.items() if k != "cached"}, access)
         if session_id and out.get("answer"):
             self._store.append(session_id, query, out["answer"])
         return out
@@ -81,6 +117,21 @@ class Orchestrator:
     async def stream(self, query: str, filters: dict | None = None,
                      session_id: str = "", access=None) -> AsyncIterator[dict]:
         history = self._store.get_history(session_id)
+        cacheable = not history and not filters
+        if cacheable:
+            hit = await self._cache_lookup(query, access)
+            if hit is not None:
+                for word in (hit.get("answer", "") + " ").split(" "):
+                    if word:
+                        yield {"type": "token", "text": word + " "}
+                yield {"type": "final", "retrieval": hit.get("retrieval", []),
+                       "citations": hit.get("citations", {}), "steps": hit.get("steps", []),
+                       "safety": hit.get("safety", ""), "faithfulness": hit.get("faithfulness", {}),
+                       "cached": True}
+                if session_id and hit.get("answer"):
+                    self._store.append(session_id, query, hit["answer"])
+                return
+
         answer_parts: list[str] = []
         if self.mode == "agent":
             gen = stream_agent(query, self._r, filters=filters, settings=self._s,
@@ -94,6 +145,12 @@ class Orchestrator:
             if evt.get("type") == "final":
                 answer = "".join(answer_parts).strip()
                 evt.update(await self._assess(query, answer, evt.get("retrieval", [])))
+                if cacheable and answer:
+                    await self._cache_store(query, {
+                        "answer": answer, "retrieval": evt.get("retrieval", []),
+                        "citations": evt.get("citations", {}), "steps": evt.get("steps", []),
+                        "safety": evt.get("safety", ""),
+                        "faithfulness": evt.get("faithfulness", {})}, access)
             yield evt
         if session_id and answer_parts:
             self._store.append(session_id, query, "".join(answer_parts).strip())
