@@ -1,0 +1,54 @@
+# Fully air-gapped stack: Qdrant + Ollama + app, zero internet egress.
+#
+# Prereqs (do these in a CONNECTED staging environment, then transfer):
+#   1. Build the app image with weights baked in:
+#        docker build --build-arg PREFETCH_MODELS=true -t rag-app:offline .
+#   2. Pull the LLM + vision models into the ollama volume:
+#        docker compose -f docker-compose.offline.yml up -d ollama
+#        docker exec rag-ollama ollama pull llama3.1
+#        docker exec rag-ollama ollama pull llama3.2-vision
+#   3. Export images + volumes and move them to the air-gapped host.
+#
+# Run (air-gapped host):
+#        cp .env.offline.example .env
+#        docker compose -f docker-compose.offline.yml up -d
+#        docker exec rag-app python scripts/ingest.py
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.12.0
+    container_name: rag-qdrant
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: rag-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+
+  app:
+    image: rag-app:offline
+    container_name: rag-app
+    ports:
+      - "8000:8000"
+    environment:
+      - QDRANT_HOST=qdrant
+      - OLLAMA_BASE_URL=http://ollama:11434
+      # never reach the network for model weights at runtime
+      - HF_HUB_OFFLINE=1
+      - TRANSFORMERS_OFFLINE=1
+    env_file:
+      - .env
+    depends_on:
+      - qdrant
+      - ollama
+    volumes:
+      - ./data:/app/data
+
+volumes:
+  qdrant_data:
+  ollama_models:
