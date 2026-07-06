@@ -87,6 +87,19 @@ def test_multiturn_builds_history_and_echoes_session(agent_client):
     assert len(hist) == 4 and hist[0]["content"] == "what is fault 4F?"
 
 
+def test_electrical_query_gets_safety_notice(agent_client):
+    r = agent_client.post("/ask", json={"query": "how to fix the 440V earth fault?"})
+    assert r.status_code == 200
+    body = r.json()
+    assert "Safety notice" in body["safety"]
+    assert "faithfulness" in body
+
+
+def test_routine_query_no_safety(agent_client):
+    r = agent_client.post("/ask", json={"query": "how often to clean condenser fins?"})
+    assert r.json()["safety"] == ""
+
+
 def test_session_reset_clears_history(agent_client):
     agent_client.post("/ask", json={"query": "what is fault 4F?", "session_id": "sess-2"})
     assert agent_client._store.get_history("sess-2")

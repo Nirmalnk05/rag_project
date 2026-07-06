@@ -23,6 +23,8 @@
   .cite { color:var(--accent); cursor:pointer; text-decoration:underline; }
   .step { font-family:ui-monospace, monospace; font-size:11px; color:var(--accent);
           margin:2px 0; }
+  .safety { border:1px solid var(--warn); color:var(--warn); border-radius:8px;
+            padding:8px 12px; margin:6px 0; white-space:pre-wrap; font-size:13px; }
   #sources { width:340px; border-left:1px solid var(--border); padding:12px;
              overflow-y:auto; background:var(--panel); }
   .src { border:1px solid var(--border); border-radius:8px; padding:8px;
@@ -166,9 +168,15 @@ $("f").addEventListener("submit", async (e) => {
           `error: ${evt.message} (request ${evt.request_id})`));
       } else if (evt.type === "final") {
         renderSources(evt.retrieval); linkCitations(bot);
+        if (evt.safety) {
+          const s = el("div", "safety", evt.safety);
+          bot.after(s);
+        }
         const badges = el("div", "meta");
         if (evt.citations && !evt.citations.valid)
           badges.appendChild(el("span", "badge warn", "citations: check"));
+        if (evt.faithfulness && evt.faithfulness.checked && !evt.faithfulness.grounded)
+          badges.appendChild(el("span", "badge warn", "groundedness: check"));
         if (evt.request_id) badges.appendChild(el("span", "badge", "req " + evt.request_id));
         bot.after(badges);
       }

@@ -83,6 +83,8 @@ class AskResponse(BaseModel):
     retrieval: list[dict]
     citations: dict
     steps: list[dict]
+    safety: str
+    faithfulness: dict
     session_id: str
     request_id: str
 
@@ -161,6 +163,8 @@ async def ask(req: AskRequest, http_request: Request) -> AskResponse:
         retrieval=out.get("retrieval", []),
         citations=out.get("citations", {}),
         steps=out.get("steps", []),
+        safety=out.get("safety", ""),
+        faithfulness=out.get("faithfulness", {}),
         session_id=req.session_id,
         request_id=rid,
     )

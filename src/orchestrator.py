@@ -9,8 +9,10 @@ from typing import AsyncIterator
 
 from src.agent.loop import run_agent, stream_agent
 from src.config import get_settings
+from src.faithfulness import check_faithfulness
 from src.graph import build_state_graph, run_graph, stream_answer
 from src.memory import get_store
+from src.safety import assess_risk, safety_notice
 
 
 def _with_history_preamble(query: str, history: list[dict]) -> str:
@@ -34,6 +36,12 @@ class Orchestrator:
     @property
     def mode(self) -> str:
         return self._s.agent_mode
+
+    async def _assess(self, query: str, answer: str, retrieval: list[dict]) -> dict:
+        safety = (safety_notice(assess_risk(f"{query}\n{answer}"))
+                  if self._s.enable_safety_escalation else "")
+        faith = await check_faithfulness(answer, retrieval, provider=self._provider)
+        return {"safety": safety, "faithfulness": faith}
 
     def _full(self):
         if self._graph_full is None:
@@ -65,6 +73,7 @@ class Orchestrator:
                 "rewritten": state.get("rewritten", ""),
                 "grade": state.get("grade", ""),
             }
+        out.update(await self._assess(query, out.get("answer", ""), out.get("retrieval", [])))
         if session_id and out.get("answer"):
             self._store.append(session_id, query, out["answer"])
         return out
@@ -82,6 +91,9 @@ class Orchestrator:
         async for evt in gen:
             if evt.get("type") == "token":
                 answer_parts.append(evt.get("text", ""))
+            if evt.get("type") == "final":
+                answer = "".join(answer_parts).strip()
+                evt.update(await self._assess(query, answer, evt.get("retrieval", [])))
             yield evt
         if session_id and answer_parts:
             self._store.append(session_id, query, "".join(answer_parts).strip())

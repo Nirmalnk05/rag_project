@@ -203,6 +203,18 @@ in SAP PM / Maximo / Fiix rather than in manuals. A `MockCMMSConnector`
 ([src/agent/cmms.py](src/agent/cmms.py)) ships for offline/demo use; it's the seam
 for a real connector.
 
+**Safety escalation.** For high-risk topics (electrical/440V, lockout-tagout,
+stored pressure, confined space, refrigerant) the response carries a `safety`
+notice recommending the relevant procedure and supervisor sign-off — surfaced as a
+banner in the UI ([src/safety.py](src/safety.py), `ENABLE_SAFETY_ESCALATION`).
+Heuristic and advisory, not a substitute for site safety systems.
+
+**Groundedness check.** Beyond verifying `[#n]` markers exist, `ENABLE_FAITHFULNESS_CHECK`
+adds an LLM-judge pass that checks each claim is actually supported by the retrieved
+sources, returning `{grounded, unsupported}` on the response (a warning badge shows
+in the UI when a claim isn't grounded). One extra LLM call, non-blocking
+([src/faithfulness.py](src/faithfulness.py)).
+
 **Document freshness / versioning.** Revisions are declared in `data/versions.json`
 (`{"pump_v1.pdf": {"version": "1", "effective_date": "2024-01-01", "status":
 "superseded"}}`). Superseded revisions are **hidden from retrieval by default** so
