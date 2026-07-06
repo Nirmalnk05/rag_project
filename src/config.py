@@ -76,6 +76,14 @@ class Settings(BaseSettings):
     enable_safety_escalation: bool = True  # prepend safety notices for high-risk topics
     enable_faithfulness_check: bool = False  # extra LLM-judge call per answer
 
+    # Semantic answer cache
+    enable_semantic_cache: bool = False
+    semantic_cache_threshold: float = 0.95
+    semantic_cache_max: int = 1000
+
+    # Guardrails backend
+    guardrails_backend: str = "heuristic"  # heuristic | external
+
     # CMMS / system-of-record connector (agent tool)
     enable_cmms: bool = False
     cmms_connector: str = "mock"           # mock | (extend with real connectors)

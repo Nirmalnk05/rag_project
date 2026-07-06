@@ -117,6 +117,12 @@ class Retriever:
             from qdrant_client import QdrantClient
             self._qdrant = QdrantClient(host=s.qdrant_host, port=s.qdrant_port)
 
+    def embed_query(self, query: str) -> list[float]:
+        """Embed a query (for the semantic cache). Uses the same encoder as dense
+        retrieval, guarded by the embed lock."""
+        with self._embed_lock:
+            return self._embedder.encode(query, normalize_embeddings=True).tolist()
+
     # ---------- single-source retrievers (sync; run via to_thread) ----------
 
     def dense_search(self, query: str, top_k: int, filters: dict | None = None,
