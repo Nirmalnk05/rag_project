@@ -60,6 +60,12 @@ class Settings(BaseSettings):
     agent_max_steps: int = 6
     agent_max_tool_results_chars: int = 4000
 
+    # Conversation memory
+    enable_memory: bool = True
+    memory_backend: str = "memory"         # memory | redis
+    memory_max_turns: int = 10             # user+assistant pairs kept per session
+    memory_ttl_s: int = 3600
+
     # Figure captioning (vision)
     enable_figure_caption: bool = True
     vision_model: str = ""  # e.g. a Claude vision model, or "llama3.2-vision"
