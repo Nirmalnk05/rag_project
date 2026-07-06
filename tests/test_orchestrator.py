@@ -70,6 +70,39 @@ async def test_agent_mode_stream_yields_events():
     assert "tool_call" in types and types[-1] == "final"
 
 
+async def test_session_history_roundtrips_agent_mode():
+    from src.memory import SessionStore
+    retr = FakeRetriever([Retrieved("c1", "d", "P", "S", "4F low pressure", "", 0.9, "rerank")])
+    # first turn asks a tool then answers; second turn answers directly
+    provider = ScriptedProvider([
+        ChatResult(tool_calls=[ToolCall("t1", "search", {"query": "4F"})]),
+        ChatResult(text="Low pressure [#1]."),
+        ChatResult(text="Check the strainer [#1]."),
+    ])
+    store = SessionStore(Settings(_env_file=None, enable_memory=True, memory_max_turns=5))
+    orch = Orchestrator(retr, settings=Settings(_env_file=None, agent_mode="agent"),
+                        provider=provider, store=store)
+    await orch.run("what is 4F?", session_id="s1")
+    # history now has the first exchange
+    assert len(store.get_history("s1")) == 2
+    await orch.run("how do I fix it?", session_id="s1")
+    hist = store.get_history("s1")
+    assert len(hist) == 4
+    assert hist[0]["content"] == "what is 4F?"
+    assert hist[1]["content"] == "Low pressure [#1]."
+
+
+async def test_no_session_id_does_not_store():
+    from src.memory import SessionStore
+    retr = FakeRetriever([Retrieved("c1", "d", "P", "S", "t", "", 0.9, "rerank")])
+    provider = ScriptedProvider([ChatResult(text="answer")])
+    store = SessionStore(Settings(_env_file=None, enable_memory=True))
+    orch = Orchestrator(retr, settings=Settings(_env_file=None, agent_mode="agent"),
+                        provider=provider, store=store)
+    await orch.run("q")  # no session_id
+    assert store.get_history("") == []
+
+
 async def test_pipeline_mode_stream_delegates(monkeypatch):
     async def fake_stream_answer(graph, query, filters=None):
         yield {"type": "rewrite", "rewritten": "rw"}
