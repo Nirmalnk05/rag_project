@@ -125,6 +125,30 @@ def session_reset(req: ResetRequest) -> dict:
     return {"status": "reset", "session_id": req.session_id}
 
 
+class FeedbackRequest(BaseModel):
+    rating: str = Field(..., pattern="^(up|down)$")
+    query: str = Field(default="", max_length=2000)
+    answer: str = Field(default="", max_length=8000)
+    request_id: str = Field(default="", max_length=128)
+    session_id: str = Field(default="", max_length=128)
+    comment: str = Field(default="", max_length=2000)
+
+
+@app.post("/feedback", dependencies=[Depends(require_api_key)])
+def feedback(req: FeedbackRequest) -> dict:
+    from src.feedback import get_feedback_store
+    get_feedback_store().record(
+        rating=req.rating, query=req.query, answer=req.answer,
+        request_id=req.request_id, session_id=req.session_id, comment=req.comment)
+    return {"status": "recorded", "rating": req.rating}
+
+
+@app.get("/feedback/summary", dependencies=[Depends(require_api_key)])
+def feedback_summary() -> dict:
+    from src.feedback import get_feedback_store
+    return get_feedback_store().summary()
+
+
 def _guard(query: str) -> None:
     reason = screen_input(query)
     if reason:

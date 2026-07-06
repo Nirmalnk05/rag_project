@@ -58,6 +58,24 @@ def test_ready_when_loaded(client):
     assert r.status_code == 200 and r.json()["status"] == "ready"
 
 
+def test_feedback_record_and_summary(client, tmp_path):
+    from src import feedback
+    from src.config import Settings
+    feedback.set_feedback_store(feedback.FeedbackStore(Settings(_env_file=None),
+                                                       path=tmp_path / "fb.jsonl"))
+    try:
+        assert client.post("/feedback", json={"rating": "up", "query": "q"}).status_code == 200
+        client.post("/feedback", json={"rating": "down", "query": "q2", "comment": "wrong"})
+        s = client.get("/feedback/summary").json()
+        assert s == {"up": 1, "down": 1, "total": 2}
+    finally:
+        feedback.set_feedback_store(None)
+
+
+def test_feedback_rejects_bad_rating(client):
+    assert client.post("/feedback", json={"rating": "meh"}).status_code == 422
+
+
 def test_ready_503_when_not_loaded(monkeypatch):
     from src.api import app as fresh_app
     # simulate pre-startup: clear loaded state
