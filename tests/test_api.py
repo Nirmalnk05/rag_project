@@ -76,6 +76,14 @@ def test_feedback_rejects_bad_rating(client):
     assert client.post("/feedback", json={"rating": "meh"}).status_code == 422
 
 
+def test_metrics_endpoint_exposes_prometheus(client):
+    client.post("/ask", json={"query": "what is alarm 4F?"})
+    r = client.get("/metrics")
+    assert r.status_code == 200
+    assert "rag_requests_total" in r.text
+    assert "rag_answer_latency_seconds_count" in r.text
+
+
 def test_ready_503_when_not_loaded(monkeypatch):
     from src.api import app as fresh_app
     # simulate pre-startup: clear loaded state

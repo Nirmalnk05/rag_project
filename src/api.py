@@ -114,6 +114,13 @@ def chat_ui() -> FileResponse:
     return FileResponse(_STATIC_DIR / "index.html")
 
 
+@app.get("/metrics")
+def metrics():
+    from fastapi.responses import PlainTextResponse
+    from src.metrics import render
+    return PlainTextResponse(render(), media_type="text/plain; version=0.0.4")
+
+
 class ResetRequest(BaseModel):
     session_id: str = Field(..., max_length=128)
 
@@ -166,16 +173,26 @@ def _access_for(request: Request):
 @app.post("/ask", response_model=AskResponse,
           dependencies=[Depends(require_api_key), Depends(rate_limiter)])
 async def ask(req: AskRequest, http_request: Request) -> AskResponse:
+    import time as _time
+
+    from src.metrics import ANSWER_LATENCY, CACHE_HITS, REQUESTS, TOOL_CALLS
     _guard(req.query)
     settings = get_settings()
     rid = request_id_var.get()
     access = _access_for(http_request)
     trace = get_tracer().trace(name="ask", request_id=rid, input=req.query)
     tok = set_current_trace(trace)
+    _t0 = _time.perf_counter()
     try:
         out = await app.state.orchestrator.run(req.query, req.filters, req.session_id, access)
     finally:
         reset_current_trace(tok)
+    REQUESTS.inc(endpoint="ask", status="ok")
+    ANSWER_LATENCY.observe(_time.perf_counter() - _t0)
+    if out.get("cached"):
+        CACHE_HITS.inc()
+    for step in out.get("steps", []):
+        TOOL_CALLS.inc(tool=step.get("tool", "?"))
     answer = out.get("answer", "")
     if settings.redact_pii_in_answers:
         answer, _found = redact_pii(answer)
