@@ -36,3 +36,15 @@ def test_point_id_deterministic_uuid():
     p1, p2 = point_id_for("chunk-1"), point_id_for("chunk-1")
     assert p1 == p2 and p1 != point_id_for("chunk-2")
     uuid.UUID(p1)  # valid uuid string
+
+
+def test_embed_model_changed(tmp_path):
+    import json
+
+    from src.ingestion import embed_model_changed
+    meta = tmp_path / "index_meta.json"
+    # no meta yet → not changed
+    assert embed_model_changed("bge-small", meta) is False
+    meta.write_text(json.dumps({"embed_model": "bge-small"}), encoding="utf-8")
+    assert embed_model_changed("bge-small", meta) is False       # same model
+    assert embed_model_changed("bge-large", meta) is True        # different → needs re-embed

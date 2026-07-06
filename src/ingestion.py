@@ -24,6 +24,19 @@ _settings = get_settings()
 CHUNK_STORE_PATH = Path("data/chunks.json")
 MANIFEST_PATH = Path("data/ingest_manifest.json")
 CONTEXT_CACHE_PATH = Path("data/context_cache.json")
+INDEX_META_PATH = Path("data/index_meta.json")   # {embed_model: ...}
+
+
+def embed_model_changed(current_model: str, meta_path: Path = INDEX_META_PATH) -> bool:
+    """True if the index was built with a different embedding model (needs re-embed)."""
+    if not meta_path.exists():
+        return False
+    try:
+        with meta_path.open("r", encoding="utf-8") as f:
+            prev = json.load(f).get("embed_model", "")
+    except (json.JSONDecodeError, OSError):
+        return False
+    return bool(prev) and prev != current_model
 ACL_SIDECAR_PATH = Path("data/acl.json")   # {source_file: {roles: [...], sites: [...]}}
 # {source_file: {version, effective_date, status: active|superseded, supersedes: [...]}}
 VERSIONS_SIDECAR_PATH = Path("data/versions.json")
@@ -264,6 +277,10 @@ def run_ingestion(docs_dir: Path = Path("data/docs"), use_contextual: bool = Tru
                   rebuild: bool = False, force_cloud: bool = False) -> None:
     print(f"[ingest] parsing documents in {docs_dir} "
           f"(contextual={use_contextual}, rebuild={rebuild}, force_cloud={force_cloud})")
+    if embed_model_changed(_settings.embed_model) and not rebuild:
+        print(f"[ingest] WARNING: embedding model changed to '{_settings.embed_model}'. "
+              "Existing vectors were built with a different model — run with --rebuild "
+              "to re-embed everything, or retrieval will be inconsistent.")
     context_cache = {} if rebuild else _load_json(CONTEXT_CACHE_PATH, {})
     previous_manifest = {} if rebuild else _load_json(MANIFEST_PATH, {})
 
@@ -286,4 +303,5 @@ def run_ingestion(docs_dir: Path = Path("data/docs"), use_contextual: bool = Tru
     _save_json(CHUNK_STORE_PATH, [c.to_dict() for c in chunks])
     _save_json(MANIFEST_PATH, current_manifest)
     _save_json(CONTEXT_CACHE_PATH, context_cache)
+    _save_json(INDEX_META_PATH, {"embed_model": _settings.embed_model})
     print("[ingest] done.")

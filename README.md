@@ -329,6 +329,12 @@ everything except first-time model-weight downloads works offline.
   gates traffic until models load. Manifests in `deploy/k8s/`; guide:
   [docs/deployment/cloud.md](docs/deployment/cloud.md).
 
+**Operations** ([docs/deployment/operations.md](docs/deployment/operations.md)):
+Prometheus `/metrics` (requests, cache hits, tool calls, latency); versioned prompt
+registry (`PROMPT_VERSION`); embedding-migration guard + `scripts/reembed.py`;
+`scripts/backup_index.py` / `restore_index.py`; and how to run ingestion as a queued
+worker job for large corpora.
+
 **What needs internet (and how to avoid it):** the Anthropic/OpenAI/Azure LLM
 APIs (→ use Ollama/local), LlamaParse/Azure cloud parsing (→ `PARSE_BACKEND=local`),
 cloud Langfuse (→ disable or self-host), and the one-time download of the BGE and
