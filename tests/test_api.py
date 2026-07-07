@@ -76,6 +76,46 @@ def test_feedback_rejects_bad_rating(client):
     assert client.post("/feedback", json={"rating": "meh"}).status_code == 422
 
 
+class FakeTracerForScore:
+    def __init__(self):
+        self.score_calls = []
+
+    def score(self, **kwargs):
+        self.score_calls.append(kwargs)
+
+
+def test_feedback_pushes_score_to_langfuse_when_request_id_present(client, monkeypatch, tmp_path):
+    from src import feedback
+    from src.config import Settings
+    feedback.set_feedback_store(feedback.FeedbackStore(Settings(_env_file=None),
+                                                       path=tmp_path / "fb.jsonl"))
+    fake_tracer = FakeTracerForScore()
+    monkeypatch.setattr("src.api.get_tracer", lambda: fake_tracer)
+    try:
+        client.post("/feedback", json={"rating": "up", "request_id": "r1", "comment": "great"})
+        client.post("/feedback", json={"rating": "down", "request_id": "r2"})
+    finally:
+        feedback.set_feedback_store(None)
+    assert fake_tracer.score_calls == [
+        {"trace_id": "r1", "name": "user_feedback", "value": 1.0, "comment": "great"},
+        {"trace_id": "r2", "name": "user_feedback", "value": 0.0, "comment": ""},
+    ]
+
+
+def test_feedback_no_score_when_request_id_absent(client, monkeypatch, tmp_path):
+    from src import feedback
+    from src.config import Settings
+    feedback.set_feedback_store(feedback.FeedbackStore(Settings(_env_file=None),
+                                                       path=tmp_path / "fb.jsonl"))
+    fake_tracer = FakeTracerForScore()
+    monkeypatch.setattr("src.api.get_tracer", lambda: fake_tracer)
+    try:
+        client.post("/feedback", json={"rating": "up"})
+    finally:
+        feedback.set_feedback_store(None)
+    assert fake_tracer.score_calls == []
+
+
 def test_metrics_endpoint_exposes_prometheus(client):
     client.post("/ask", json={"query": "what is alarm 4F?"})
     r = client.get("/metrics")

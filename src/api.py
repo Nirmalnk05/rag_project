@@ -147,6 +147,9 @@ def feedback(req: FeedbackRequest) -> dict:
     get_feedback_store().record(
         rating=req.rating, query=req.query, answer=req.answer,
         request_id=req.request_id, session_id=req.session_id, comment=req.comment)
+    if req.request_id:
+        get_tracer().score(trace_id=req.request_id, name="user_feedback",
+                          value=1.0 if req.rating == "up" else 0.0, comment=req.comment)
     return {"status": "recorded", "rating": req.rating}
 
 
@@ -180,7 +183,8 @@ async def ask(req: AskRequest, http_request: Request) -> AskResponse:
     settings = get_settings()
     rid = request_id_var.get()
     access = _access_for(http_request)
-    trace = get_tracer().trace(name="ask", request_id=rid, input=req.query)
+    trace = get_tracer().trace(name="ask", request_id=rid, input=req.query,
+                               session_id=req.session_id)
     tok = set_current_trace(trace)
     _t0 = _time.perf_counter()
     try:
@@ -219,7 +223,8 @@ async def ask_stream(req: AskRequest, http_request: Request) -> StreamingRespons
     access = _access_for(http_request)
 
     async def event_generator() -> AsyncIterator[str]:
-        trace = get_tracer().trace(name="ask_stream", request_id=rid, input=req.query)
+        trace = get_tracer().trace(name="ask_stream", request_id=rid, input=req.query,
+                                   session_id=req.session_id)
         tok = set_current_trace(trace)
         try:
             async for evt in app.state.orchestrator.stream(req.query, req.filters,

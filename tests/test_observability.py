@@ -2,7 +2,7 @@ import json
 import logging
 
 from src.observability import (
-    JsonFormatter, Trace, get_tracer, log_event, node_span, record_generation,
+    JsonFormatter, Trace, Tracer, get_tracer, log_event, node_span, record_generation,
     request_id_var, reset_current_trace, set_current_trace, setup_logging,
 )
 
@@ -27,6 +27,21 @@ class FakeLangfuseTrace:
         self.generations.append(
             {"name": name, "model": model, "usage": usage, "metadata": metadata}
         )
+
+
+class FakeLangfuseClient:
+    """Duck-typed stand-in for the top-level langfuse SDK client."""
+
+    def __init__(self):
+        self.trace_calls: list[dict] = []
+        self.score_calls: list[dict] = []
+
+    def trace(self, **kwargs):
+        self.trace_calls.append(kwargs)
+        return FakeLangfuseTrace()
+
+    def score(self, **kwargs):
+        self.score_calls.append(kwargs)
 
 
 def test_json_formatter_includes_request_id():
@@ -93,3 +108,47 @@ def test_node_span_creates_tool_span_with_args():
     finally:
         reset_current_trace(tok)
     assert fake.spans == [("tool_search", {"args": {"query": "4F"}})]
+
+
+def test_tracer_trace_passes_session_id_when_present():
+    client = FakeLangfuseClient()
+    tracer = Tracer(client)
+    tracer.trace(name="ask", request_id="r1", input="q", session_id="sess-1")
+    assert client.trace_calls == [
+        {"name": "ask", "id": "r1", "input": "q", "session_id": "sess-1"}
+    ]
+
+
+def test_tracer_trace_omits_session_id_when_absent():
+    client = FakeLangfuseClient()
+    tracer = Tracer(client)
+    tracer.trace(name="ask", request_id="r1", input="q")
+    assert client.trace_calls == [{"name": "ask", "id": "r1", "input": "q"}]
+    tracer.trace(name="ask", request_id="r2", input="q2", session_id="")
+    assert "session_id" not in client.trace_calls[-1]
+
+
+def test_tracer_trace_noop_without_client():
+    tracer = Tracer(None)
+    trace = tracer.trace(name="ask", request_id="r1", input="q", session_id="s1")
+    assert isinstance(trace, Trace)  # returns a no-op Trace, doesn't raise
+
+
+def test_tracer_score_calls_client():
+    client = FakeLangfuseClient()
+    tracer = Tracer(client)
+    tracer.score(trace_id="r1", name="user_feedback", value=1.0, comment="great")
+    assert client.score_calls == [
+        {"trace_id": "r1", "name": "user_feedback", "value": 1.0, "comment": "great"}
+    ]
+
+
+def test_tracer_score_empty_comment_becomes_none():
+    client = FakeLangfuseClient()
+    tracer = Tracer(client)
+    tracer.score(trace_id="r1", name="user_feedback", value=0.0)
+    assert client.score_calls[0]["comment"] is None
+
+
+def test_tracer_score_noop_without_client():
+    Tracer(None).score(trace_id="r1", name="user_feedback", value=1.0)  # no exception

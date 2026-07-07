@@ -91,10 +91,19 @@ class Tracer:
     def __init__(self, client=None):
         self._client = client
 
-    def trace(self, *, name: str, request_id: str, input: str) -> Trace:
+    def trace(self, *, name: str, request_id: str, input: str,
+             session_id: str | None = None) -> Trace:
         if not self._client:
             return Trace(None)
-        return Trace(self._client.trace(name=name, id=request_id, input=input))
+        kwargs = {"name": name, "id": request_id, "input": input}
+        if session_id:
+            kwargs["session_id"] = session_id
+        return Trace(self._client.trace(**kwargs))
+
+    def score(self, *, trace_id: str, name: str, value: float, comment: str = "") -> None:
+        if self._client:
+            self._client.score(trace_id=trace_id, name=name, value=value,
+                              comment=comment or None)
 
 
 _tracer: Tracer | None = None
