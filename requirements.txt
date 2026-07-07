@@ -33,6 +33,12 @@ langchain-core==0.3.15
 ragas==0.2.3
 datasets==3.0.1
 nltk==3.9.1  # transitive requirement of ragas's bleu-score metric (imported eagerly)
+# Pinned explicitly: ragas depends on these unpinned, so pip can otherwise
+# resolve a different (possibly incompatible) version per machine -- e.g. a
+# langchain-community release that reorganized/dropped chat_models.vertexai,
+# which ragas's import chain still references internally.
+langchain==0.3.26
+langchain-community==0.3.26
 # RAGAS judge LLM follows LLM_PROVIDER (Claude / Ollama / OpenAI-compatible);
 # embeddings always run locally, matching the app's own retrieval embeddings.
 langchain-anthropic==0.2.4
