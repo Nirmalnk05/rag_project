@@ -30,7 +30,8 @@
       "Bash(python -m pytest tests/test_api.py -q)",
       "Bash(python -m pytest tests/ -q)",
       "Bash(git commit -q -m 'refactor: async pipeline — hybrid retrieval, incremental ingestion, async graph, hardened API *)",
-      "Bash(git commit -q -m 'feat: chat UI, Dockerfile+compose app service, CI workflow, truthful README, env template *)"
+      "Bash(git commit -q -m 'feat: chat UI, Dockerfile+compose app service, CI workflow, truthful README, env template *)",
+      "Bash(git commit -q -m 'fix: reuse a persistent event loop in complete_sync to avoid breaking cached provider clients *)"
     ]
   }
 }

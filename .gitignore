@@ -3,6 +3,8 @@ __pycache__/
 *.pyc
 .env
 .pytest_cache/
+~$*.bkp
+~$*.drawio
 # generated artifacts
 data/chunks.json
 data/bm25_index.pkl
