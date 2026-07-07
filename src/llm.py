@@ -56,5 +56,27 @@ async def stream_complete(
         yield token
 
 
+_sync_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _get_sync_loop() -> asyncio.AbstractEventLoop:
+    """A persistent event loop reused across complete_sync() calls.
+
+    asyncio.run() would create and close a new loop on every call. The LLM
+    provider (get_provider()) is a process-wide singleton whose async client
+    (e.g. httpx.AsyncClient / AsyncAnthropic) binds its connections to
+    whichever loop is running when it's first used. Closing that loop out
+    from under it (as asyncio.run() does) breaks the client on the next
+    call — surfacing as "RuntimeError: Event loop is closed" during
+    ingestion, which calls complete_sync() once per chunk. Reusing one loop
+    for the lifetime of the process keeps the provider's client valid.
+    """
+    global _sync_loop
+    if _sync_loop is None or _sync_loop.is_closed():
+        _sync_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(_sync_loop)
+    return _sync_loop
+
+
 def complete_sync(prompt: str, **kwargs) -> LLMResult:
-    return asyncio.run(complete(prompt, **kwargs))
+    return _get_sync_loop().run_until_complete(complete(prompt, **kwargs))

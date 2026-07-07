@@ -42,6 +42,24 @@ def test_complete_sync_wraps_async(fake_provider):
     assert r.text == "echo:hi"
 
 
+def test_complete_sync_multiple_calls_reuse_open_loop(fake_provider):
+    """Regression test: complete_sync() must not create-and-close a new event
+    loop on every call (that breaks a provider client cached across calls —
+    see the docstring on _get_sync_loop). Simulates the ingestion pattern of
+    calling complete_sync() once per chunk in a loop."""
+    r1 = llm.complete_sync("first", model="m1")
+    loop_after_first = llm._sync_loop
+    assert loop_after_first is not None and not loop_after_first.is_closed()
+
+    r2 = llm.complete_sync("second", model="m1")
+    r3 = llm.complete_sync("third", model="m1")
+
+    assert [r1.text, r2.text, r3.text] == ["echo:first", "echo:second", "echo:third"]
+    # same loop instance reused across all three calls, never closed in between
+    assert llm._sync_loop is loop_after_first
+    assert not llm._sync_loop.is_closed()
+
+
 def test_factory_selects_by_provider(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "ollama")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "")
