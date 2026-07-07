@@ -32,6 +32,13 @@ langchain-core==0.3.15
 # Eval
 ragas==0.2.3
 datasets==3.0.1
+nltk==3.9.1  # transitive requirement of ragas's bleu-score metric (imported eagerly)
+# RAGAS judge LLM follows LLM_PROVIDER (Claude / Ollama / OpenAI-compatible);
+# embeddings always run locally, matching the app's own retrieval embeddings.
+langchain-anthropic==0.2.4
+langchain-ollama==0.2.0
+langchain-openai==0.2.5
+langchain-huggingface==0.1.2
 
 # Tracing (optional)
 langfuse==2.53.3

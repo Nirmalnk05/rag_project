@@ -150,6 +150,14 @@ curl -N -X POST http://localhost:8000/ask/stream \
 python scripts/run_eval.py   # RAGAS: faithfulness, answer_relevancy, context precision/recall
 ```
 
+RAGAS's judge LLM follows whichever `LLM_PROVIDER` is configured (Claude,
+Ollama, or an OpenAI-compatible server) instead of defaulting to OpenAI —
+[src/eval_runner.py](src/eval_runner.py) wraps the same provider via
+`langchain-anthropic`/`langchain-ollama`/`langchain-openai`. Embeddings for
+scoring always run locally via the app's own `EMBED_MODEL`, regardless of
+provider. `ragas`/`datasets`/these langchain integrations are lazy-imported —
+only `scripts/run_eval.py` needs them, not the running app.
+
 ## Chat UI
 
 A single static page (`src/static/index.html`, no build step) served at `/`:
