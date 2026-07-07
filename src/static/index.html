@@ -25,6 +25,12 @@
           margin:2px 0; }
   .safety { border:1px solid var(--warn); color:var(--warn); border-radius:8px;
             padding:8px 12px; margin:6px 0; white-space:pre-wrap; font-size:13px; }
+  .feedback { margin-left:6px; }
+  .fb-btn { background:none; border:1px solid var(--border); border-radius:6px;
+            padding:1px 8px; margin-right:4px; cursor:pointer; font-size:12px; }
+  .fb-btn:hover { border-color:var(--accent); }
+  .fb-btn:disabled { opacity:0.5; cursor:default; }
+  .fb-btn.fb-selected { border-color:var(--accent); background:#1c2733; }
   #sources { width:340px; border-left:1px solid var(--border); padding:12px;
              overflow-y:auto; background:var(--panel); }
   .src { border:1px solid var(--border); border-radius:8px; padding:8px;
@@ -178,6 +184,29 @@ $("f").addEventListener("submit", async (e) => {
         if (evt.faithfulness && evt.faithfulness.checked && !evt.faithfulness.grounded)
           badges.appendChild(el("span", "badge warn", "groundedness: check"));
         if (evt.request_id) badges.appendChild(el("span", "badge", "req " + evt.request_id));
+
+        const fb = el("span", "feedback");
+        const up = el("button", "fb-btn", "👍");
+        const down = el("button", "fb-btn", "👎");
+        up.type = "button"; down.type = "button";
+        const sendFeedback = async (rating, chosen) => {
+          up.disabled = true; down.disabled = true;
+          chosen.classList.add("fb-selected");
+          try {
+            const fbHeaders = {"Content-Type": "application/json"};
+            const fbKey = $("apikey").value.trim();
+            if (fbKey) fbHeaders["X-API-Key"] = fbKey;
+            await fetch("/feedback", {method: "POST", headers: fbHeaders, body: JSON.stringify({
+              rating, query: q, answer: bot.textContent,
+              request_id: evt.request_id || "", session_id: sessionId,
+            })});
+          } catch (err) {}
+        };
+        up.onclick = () => sendFeedback("up", up);
+        down.onclick = () => sendFeedback("down", down);
+        fb.appendChild(up); fb.appendChild(down);
+        badges.appendChild(fb);
+
         bot.after(badges);
       }
     }
