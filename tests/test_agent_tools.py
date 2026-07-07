@@ -1,6 +1,6 @@
 import pytest
 
-from src.agent.tools import ToolRegistry
+from src.agent.tools import ToolRegistry, _coerce_top_k
 from src.retrieval import Retrieved
 
 
@@ -32,6 +32,36 @@ async def test_search_numbering_continues_across_calls():
     await reg.execute("search", {"query": "x"})
     out2 = await reg.execute("search", {"query": "y"})
     assert "[#2]" in out2 and reg.num_sources == 2
+
+
+def test_coerce_top_k():
+    assert _coerce_top_k(5) == 5
+    assert _coerce_top_k("5") == 5           # local models sometimes send a string
+    assert _coerce_top_k("5.0") is None      # not parseable as int -> ignored, not raised
+    assert _coerce_top_k(0) is None
+    assert _coerce_top_k(-3) is None
+    assert _coerce_top_k(None) is None
+    assert _coerce_top_k("not a number") is None
+    assert _coerce_top_k({"nested": 5}) is None
+
+
+async def test_search_with_string_top_k_does_not_crash():
+    """Regression test: the model can send top_k as a JSON string instead of
+    an int (observed with a local Ollama model during eval). Must clip
+    results, not raise TypeError on list slicing."""
+    results = [_r(f"result {i}") for i in range(5)]
+    reg = ToolRegistry(FakeRetriever(results=results))
+    out = await reg.execute("search", {"query": "P-100 seal", "top_k": "2"})
+    assert "Tool error" not in out
+    assert reg.num_sources == 2  # clipped to top_k=2, not all 5
+
+
+async def test_search_with_malformed_top_k_falls_back_to_unclipped():
+    results = [_r(f"result {i}") for i in range(3)]
+    reg = ToolRegistry(FakeRetriever(results=results))
+    out = await reg.execute("search", {"query": "P-100 seal", "top_k": "not-a-number"})
+    assert "Tool error" not in out
+    assert reg.num_sources == 3  # malformed top_k ignored, all results returned
 
 
 async def test_lookup_fault_code_filters_tables():

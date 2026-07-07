@@ -16,6 +16,22 @@ from src.providers.base import ToolSpec
 _logger = logging.getLogger("rag.agent.tools")
 
 
+def _coerce_top_k(value) -> int | None:
+    """Tool arguments come from the model's tool call, not a type-checked
+    caller — the declared JSON-schema type ("integer") isn't guaranteed at
+    runtime, and local/smaller tool-calling models in particular sometimes
+    pass e.g. top_k="5" instead of an int. Coerce leniently rather than let
+    list slicing raise; ignore anything that can't be parsed as a positive
+    int so search just returns unclipped results instead of erroring."""
+    if value is None:
+        return None
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return None
+    return n if n > 0 else None
+
+
 TOOL_SPECS = [
     ToolSpec(
         name="search",
@@ -120,7 +136,7 @@ class ToolRegistry:
 
     # ---------- implementations ----------
 
-    async def _search(self, query: str, filters: dict | None, top_k: int | None) -> str:
+    async def _search(self, query: str, filters: dict | None, top_k) -> str:
         if not query.strip():
             return "Error: empty query."
         results = await self._r.hybrid_retrieve(query, filters or None, self._access)
@@ -128,6 +144,7 @@ class ToolRegistry:
         clean, flagged = screen_chunks(dicts)
         if flagged:
             log_event(_logger, "chunk_flagged_in_tool", count=len(flagged))
+        top_k = _coerce_top_k(top_k)
         if top_k:
             clean = clean[:top_k]
         if not clean:
