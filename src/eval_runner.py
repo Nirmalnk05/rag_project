@@ -9,11 +9,13 @@ Metrics:
 from __future__ import annotations
 
 import json
+import uuid
 from pathlib import Path
 
 from datasets import Dataset
 
 from src.config import Settings, get_settings
+from src.observability import get_tracer, reset_current_trace, set_current_trace
 from src.retrieval import Retriever
 
 
@@ -59,6 +61,26 @@ def _build_ragas_llm_and_embeddings(settings: Settings):
     return LangchainLLMWrapper(chat), LangchainEmbeddingsWrapper(embeddings)
 
 
+async def _run_traced(orchestrator, question: str, *, session_id: str,
+                      request_id: str) -> dict:
+    """Run one golden-set question through the orchestrator under a Langfuse
+    trace, grouped with the rest of the eval run via session_id. Mirrors the
+    tracing done around every live /ask request in src/api.py -- without it,
+    orchestrator.run() has no active trace, so node_span()/record_generation()
+    (used deep inside the agent loop / graph nodes) silently no-op and eval
+    runs never show up in Langfuse. No-ops the same way when Langfuse isn't
+    configured (Tracer(None))."""
+    trace = get_tracer().trace(name="eval", request_id=request_id, input=question,
+                               session_id=session_id)
+    tok = set_current_trace(trace)
+    try:
+        out = await orchestrator.run(question)
+    finally:
+        reset_current_trace(tok)
+    trace.end(output=out.get("answer", ""))
+    return out
+
+
 def run_eval() -> dict:
     """Run the system over the golden set, then score with RAGAS."""
     # Lazy import to avoid pulling ragas deps on every API import
@@ -90,9 +112,13 @@ def run_eval() -> dict:
         # same class of bug fixed in complete_sync(), just a second call
         # site that used asyncio.run() directly instead).
         rows: list[dict] = []
+        eval_session_id = f"eval-{uuid.uuid4().hex[:8]}"
+        print(f"[eval] Langfuse session: {eval_session_id}")
         for i, item in enumerate(golden, 1):
             print(f"[eval] {i}/{len(golden)}: {item['question'][:60]}...")
-            out = await orchestrator.run(item["question"])
+            out = await _run_traced(orchestrator, item["question"],
+                                    session_id=eval_session_id,
+                                    request_id=f"{eval_session_id}-q{i}")
             contexts = [r["text"] for r in out.get("retrieval", [])]
             rows.append(
                 {

@@ -1,7 +1,8 @@
 import pytest
 
 from src.config import Settings
-from src.eval_runner import _build_ragas_llm_and_embeddings
+from src.eval_runner import _build_ragas_llm_and_embeddings, _run_traced
+from src.observability import Tracer, _current_trace
 
 
 class FakeHFEmbeddings:
@@ -66,3 +67,98 @@ def test_unknown_provider_raises():
     s = Settings(_env_file=None, llm_provider="bogus")
     with pytest.raises(ValueError, match="bogus"):
         _build_ragas_llm_and_embeddings(s)
+
+
+# ---------- _run_traced: Langfuse wiring for eval runs ----------
+
+class FakeLangfuseTrace:
+    def __init__(self):
+        self.ended_with: str | None = None
+
+    def span(self, *, name, input=None):
+        raise AssertionError("not used by this test")
+
+    def generation(self, **kwargs):
+        raise AssertionError("not used by this test")
+
+    def update(self, *, output):
+        self.ended_with = output
+
+
+class FakeLangfuseClient:
+    def __init__(self):
+        self.trace_calls: list[dict] = []
+        self.last_trace: FakeLangfuseTrace | None = None
+
+    def trace(self, **kwargs):
+        self.trace_calls.append(kwargs)
+        self.last_trace = FakeLangfuseTrace()
+        return self.last_trace
+
+
+class FakeOrchestrator:
+    def __init__(self, answer="the answer", raise_error=None):
+        self._answer = answer
+        self._raise = raise_error
+        self.trace_active_during_run = "unset"
+
+    async def run(self, question):
+        # capture whether a trace is set as current while the orchestrator runs
+        self.trace_active_during_run = _current_trace.get() is not None
+        if self._raise:
+            raise self._raise
+        return {"answer": self._answer}
+
+
+async def test_run_traced_creates_trace_and_ends_with_answer():
+    client = FakeLangfuseClient()
+    orch = FakeOrchestrator(answer="4F means low suction pressure.")
+
+    import src.eval_runner as eval_runner
+    from unittest.mock import patch
+    with patch.object(eval_runner, "get_tracer", return_value=Tracer(client)):
+        out = await _run_traced(orch, "what is 4F?", session_id="eval-abc123",
+                                request_id="eval-abc123-q1")
+
+    assert client.trace_calls == [{
+        "name": "eval", "id": "eval-abc123-q1", "input": "what is 4F?",
+        "session_id": "eval-abc123",
+    }]
+    assert client.last_trace.ended_with == "4F means low suction pressure."
+    assert out == {"answer": "4F means low suction pressure."}
+    assert orch.trace_active_during_run is True
+
+
+async def test_run_traced_sets_and_resets_current_trace_around_run():
+    client = FakeLangfuseClient()
+    orch = FakeOrchestrator()
+
+    assert _current_trace.get() is None
+    import src.eval_runner as eval_runner
+    from unittest.mock import patch
+    with patch.object(eval_runner, "get_tracer", return_value=Tracer(client)):
+        await _run_traced(orch, "q", session_id="s", request_id="r1")
+    assert _current_trace.get() is None  # reset after the call
+
+
+async def test_run_traced_resets_current_trace_even_on_error():
+    client = FakeLangfuseClient()
+    orch = FakeOrchestrator(raise_error=ValueError("boom"))
+
+    import src.eval_runner as eval_runner
+    from unittest.mock import patch
+    with patch.object(eval_runner, "get_tracer", return_value=Tracer(client)):
+        with pytest.raises(ValueError, match="boom"):
+            await _run_traced(orch, "q", session_id="s", request_id="r1")
+    assert _current_trace.get() is None  # reset despite the exception
+
+
+async def test_run_traced_noop_without_tracing_configured():
+    orch = FakeOrchestrator(answer="ok")
+
+    import src.eval_runner as eval_runner
+    from unittest.mock import patch
+    with patch.object(eval_runner, "get_tracer", return_value=Tracer(None)):
+        out = await _run_traced(orch, "q", session_id="s", request_id="r1")
+
+    assert out == {"answer": "ok"}
