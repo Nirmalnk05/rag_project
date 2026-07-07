@@ -27,7 +27,10 @@ pandas==2.2.3           # tabular helpers
 
 # Orchestration
 langgraph==0.2.39
-langchain-core==0.3.15
+# langchain-core must satisfy both langgraph (<0.4,>=0.2.39) and langchain==0.3.26
+# (>=0.3.66,<1.0.0) below -- 0.3.15 (the original pin) is too old once ragas's
+# langchain/langchain-community requirement entered the picture.
+langchain-core==0.3.66
 
 # Eval
 ragas==0.2.3
