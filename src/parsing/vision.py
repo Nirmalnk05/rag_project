@@ -8,7 +8,6 @@ Gated by `enable_figure_caption` + a configured `vision_model`; when off, return
 """
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 from pathlib import Path
@@ -73,7 +72,15 @@ class FigureCaptioner:
         return caption
 
     def caption_sync(self, image: bytes, media_type: str) -> str:
-        return asyncio.run(self.caption(image, media_type))
+        # Reuse llm.py's persistent event loop rather than asyncio.run(), which
+        # would create+close a new loop per call. Ingestion calls this once per
+        # figure across a whole run, and the LLM provider is a process-wide
+        # singleton whose async client binds to whichever loop is active on
+        # first use -- closing that loop under it breaks the client on the
+        # next figure ("RuntimeError: Event loop is closed"). Same fix already
+        # applied to complete_sync() for the same reason.
+        from src.llm import _get_sync_loop
+        return _get_sync_loop().run_until_complete(self.caption(image, media_type))
 
     def _save_cache(self) -> None:
         if self._cache_path is None:

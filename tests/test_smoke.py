@@ -22,7 +22,7 @@ def test_config_loads():
 
 def test_graph_imports():
     """LangGraph wiring should be importable without running."""
-    from src.graph import build_state_graph, run_sync, stream_answer  # noqa: F401
+    from src.graph import build_state_graph, run_graph, stream_answer  # noqa: F401
 
 
 def test_retrieval_imports():

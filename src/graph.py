@@ -204,20 +204,6 @@ async def run_graph(graph, query: str, filters: dict | None = None, access=None)
     })
 
 
-# ---------- sync + streaming helpers ----------
-
-_graph_cache: dict[int, object] = {}
-
-
-def run_sync(retriever: Retriever, query: str) -> GraphState:
-    """One-shot synchronous run (eval scripts). Caches the compiled graph."""
-    import asyncio
-    g = _graph_cache.get(id(retriever))
-    if g is None:
-        g = _graph_cache[id(retriever)] = build_state_graph(retriever)
-    return asyncio.run(run_graph(g, query))
-
-
 async def stream_answer(pre_generate_graph, query: str, filters: dict | None = None,
                         access=None) -> AsyncIterator[dict]:
     """Run rewrite/retrieve/grade via the pre-generate graph, then STREAM the
