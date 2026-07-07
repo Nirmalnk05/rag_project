@@ -80,19 +80,31 @@ def run_eval() -> dict:
     orchestrator = Orchestrator(retriever)  # honors AGENT_MODE (agent or pipeline)
     ragas_llm, ragas_embeddings = _build_ragas_llm_and_embeddings(settings)
 
-    rows = []
-    for i, item in enumerate(golden, 1):
-        print(f"[eval] {i}/{len(golden)}: {item['question'][:60]}...")
-        out = asyncio.run(orchestrator.run(item["question"]))
-        contexts = [r["text"] for r in out.get("retrieval", [])]
-        rows.append(
-            {
-                "user_input": item["question"],
-                "response": out.get("answer", ""),
-                "retrieved_contexts": contexts,
-                "reference": item["ground_truth"],
-            }
-        )
+    async def _collect_rows() -> list[dict]:
+        # One event loop for the whole golden set, not one per question.
+        # asyncio.run() per iteration would create+close a new loop each
+        # time, but the LLM provider is a process-wide singleton whose async
+        # client (e.g. httpx.AsyncClient) binds to whichever loop was active
+        # on first use -- closing that loop under it breaks the client on
+        # the next question with "RuntimeError: Event loop is closed" (the
+        # same class of bug fixed in complete_sync(), just a second call
+        # site that used asyncio.run() directly instead).
+        rows: list[dict] = []
+        for i, item in enumerate(golden, 1):
+            print(f"[eval] {i}/{len(golden)}: {item['question'][:60]}...")
+            out = await orchestrator.run(item["question"])
+            contexts = [r["text"] for r in out.get("retrieval", [])]
+            rows.append(
+                {
+                    "user_input": item["question"],
+                    "response": out.get("answer", ""),
+                    "retrieved_contexts": contexts,
+                    "reference": item["ground_truth"],
+                }
+            )
+        return rows
+
+    rows = asyncio.run(_collect_rows())
 
     ds = Dataset.from_list(rows)
     print(f"[eval] scoring with RAGAS (judge: {settings.llm_provider}/{settings.answer_model})...")
