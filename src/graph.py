@@ -12,15 +12,16 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import AsyncIterator, Literal, TypedDict
 
 from langgraph.graph import END, StateGraph
 
-from src.citations import verify_citations
+from src.citations import ensure_citations
 from src.config import get_settings
 from src.guardrails import screen_chunks
 from src.llm import complete, stream_complete
-from src.observability import log_event, node_span
+from src.observability import log_event, node_span, record_generation
 from src.retrieval import Retriever
 
 _settings = get_settings()
@@ -60,9 +61,13 @@ def _make_rewrite_node():
                 )
             else:
                 sys = REWRITE_SYSTEM
+            start = time.perf_counter()
             try:
                 res = await complete(state["query"], system=sys,
                                      model=_settings.grader_model, max_tokens=200)
+                record_generation("rewrite", model=res.model, input_tokens=res.input_tokens,
+                                  output_tokens=res.output_tokens,
+                                  latency_s=time.perf_counter() - start)
                 new_q = res.text.strip() or state["query"]
             except Exception:  # degrade: retrieval on the original query
                 _logger.warning("rewrite_failed_using_original", exc_info=True)
@@ -98,9 +103,14 @@ def _make_grade_node():
                 f"Rewritten search query: {state.get('rewritten', state['query'])}\n\n"
                 f"Context:\n{ctx}\n\nIs this context sufficient to answer the original question?"
             )
+            start = time.perf_counter()
             try:
-                raw = (await complete(prompt, system=GRADER_SYSTEM,
-                                      model=_settings.grader_model, max_tokens=200)).text.strip()
+                res = await complete(prompt, system=GRADER_SYSTEM,
+                                     model=_settings.grader_model, max_tokens=200)
+                record_generation("grade", model=res.model, input_tokens=res.input_tokens,
+                                  output_tokens=res.output_tokens,
+                                  latency_s=time.perf_counter() - start)
+                raw = res.text.strip()
             except Exception:  # degrade: proceed low-confidence, no retry burn
                 _logger.warning("grader_failed_assuming_insufficient", exc_info=True)
                 return {"grade": "insufficient", "grade_reason": "grader unavailable", "retries": 0}
@@ -129,10 +139,14 @@ def _generation_prompt(state: GraphState) -> str:
 def _make_generate_node():
     async def generate_node(state: GraphState) -> GraphState:
         with node_span("generate"):
+            start = time.perf_counter()
             res = await complete(_generation_prompt(state), system=GENERATE_SYSTEM,
                                  model=_settings.answer_model, max_tokens=1024)
-            answer = res.text.strip()
-            citations = verify_citations(answer, len(state.get("retrieval", [])))
+            record_generation("generate", model=res.model, input_tokens=res.input_tokens,
+                              output_tokens=res.output_tokens,
+                              latency_s=time.perf_counter() - start)
+            answer, citations = ensure_citations(
+                res.text.strip(), len(state.get("retrieval", [])))
             return {"answer": answer, "citations": citations}
     return generate_node
 
@@ -221,6 +235,9 @@ async def stream_answer(pre_generate_graph, query: str, filters: dict | None = N
         yield {"type": "token", "text": token}
 
     answer = "".join(chunks_text)
-    citations = verify_citations(answer, len(state.get("retrieval", [])))
+    num_sources = len(state.get("retrieval", []))
+    fixed_answer, citations = ensure_citations(answer, num_sources)
+    if fixed_answer != answer:
+        yield {"type": "token", "text": fixed_answer[len(answer):]}
     yield {"type": "final", "retrieval": state.get("retrieval", []),
            "citations": citations}

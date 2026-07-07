@@ -9,14 +9,15 @@ non-streaming; the final answer is chunked into `token` events (v1 limitation).
 from __future__ import annotations
 
 import logging
+import time
 from typing import AsyncIterator
 
 from src.agent.prompts import agent_system
 from src.agent.tools import ToolRegistry
-from src.citations import verify_citations
+from src.citations import ensure_citations
 from src.config import get_settings
 from src.guardrails import screen_input
-from src.observability import log_event, node_span
+from src.observability import log_event, node_span, record_generation
 from src.providers.factory import get_provider
 from src.providers.retry import call_with_retries
 
@@ -51,15 +52,21 @@ async def stream_agent(query, retriever, *, filters=None, settings=None, provide
     steps: list[dict] = []
     final_text = ""
 
-    async def _chat(tools):
+    async def _chat(tools, span_name: str):
+        start = time.perf_counter()
+
         async def make_call(override):
             return await provider.chat(messages, tools=tools,
                                        model=override or s.answer_model, max_tokens=1024)
-        return await call_with_retries(make_call, max_attempts=s.llm_max_attempts)
+        res = await call_with_retries(make_call, max_attempts=s.llm_max_attempts)
+        record_generation(span_name, model=res.model, input_tokens=res.input_tokens,
+                          output_tokens=res.output_tokens,
+                          latency_s=time.perf_counter() - start)
+        return res
 
     for step in range(s.agent_max_steps):
         with node_span(f"agent_step_{step}"):
-            res = await _chat(registry.specs)
+            res = await _chat(registry.specs, f"agent_step_{step}")
         if not res.wants_tools:
             final_text = res.text
             break
@@ -67,7 +74,8 @@ async def stream_agent(query, retriever, *, filters=None, settings=None, provide
                          "tool_calls": res.tool_calls})
         for tc in res.tool_calls:
             yield {"type": "tool_call", "tool": tc.name, "args": tc.arguments}
-            output = await registry.execute(tc.name, tc.arguments)
+            with node_span(f"tool_{tc.name}", args=tc.arguments):
+                output = await registry.execute(tc.name, tc.arguments)
             messages.append({"role": "tool", "tool_call_id": tc.id,
                              "name": tc.name, "content": output})
             steps.append({"tool": tc.name, "args": tc.arguments})
@@ -79,13 +87,14 @@ async def stream_agent(query, retriever, *, filters=None, settings=None, provide
         messages.append({"role": "user",
                          "content": "Provide your best final answer now using the "
                                     "information gathered. Cite sources as [#n]."})
-        res = await _chat(None)
+        res = await _chat(None, "agent_step_forced_final")
         final_text = res.text or "I could not complete the task within the step limit."
+
+    final_text, citations = ensure_citations(final_text, registry.num_sources)
 
     for piece in _chunk_tokens(final_text):
         yield {"type": "token", "text": piece}
 
-    citations = verify_citations(final_text, registry.num_sources)
     yield {"type": "final", "retrieval": list(registry.sources),
            "citations": citations, "steps": steps}
 

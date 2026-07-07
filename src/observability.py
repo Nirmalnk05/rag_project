@@ -124,6 +124,16 @@ def reset_current_trace(token) -> None:
     _current_trace.reset(token)
 
 
+def record_generation(name: str, *, model: str, input_tokens: int,
+                      output_tokens: int, latency_s: float) -> None:
+    """Log an LLM call's model + token usage to the active trace, if any.
+    No-ops without an active trace (e.g. Langfuse disabled)."""
+    trace = _current_trace.get()
+    if trace is not None:
+        trace.generation(name, model=model, input_tokens=input_tokens,
+                         output_tokens=output_tokens, latency_s=latency_s)
+
+
 @contextmanager
 def node_span(name: str, **meta):
     """Span helper usable inside graph nodes; no-ops without an active trace."""

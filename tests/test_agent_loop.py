@@ -111,3 +111,79 @@ async def test_multi_tool_accumulates_sources():
     ])
     out = await run_agent("q", retr, settings=_settings(), provider=provider)
     assert len(out["retrieval"]) == 2 and out["citations"]["used"] == [1, 2]
+
+
+class FakeLfTrace:
+    """Duck-typed stand-in for a real langfuse SDK trace object."""
+
+    def __init__(self):
+        self.spans: list[tuple] = []
+
+    def span(self, *, name, input=None):
+        self.spans.append((name, input))
+
+        class _Span:
+            def end(self, *, metadata=None):
+                pass
+
+        return _Span()
+
+    def generation(self, **kw):
+        pass
+
+
+async def test_tool_call_gets_its_own_langfuse_span():
+    from src.observability import Trace, reset_current_trace, set_current_trace
+
+    retr = FakeRetriever([Retrieved("c1", "d", "P", "S", "t", "", 0.9, "rerank")])
+    provider = ScriptedProvider([
+        _res(tool_calls=[ToolCall("t1", "search", {"query": "4F"})]),
+        _res(text="answer [#1]"),
+    ])
+    fake = FakeLfTrace()
+    tok = set_current_trace(Trace(fake))
+    try:
+        await run_agent("q", retr, settings=_settings(), provider=provider)
+    finally:
+        reset_current_trace(tok)
+    names = [n for n, _ in fake.spans]
+    assert "tool_search" in names
+    assert "agent_step_0" in names
+
+
+async def test_uncited_factual_answer_gets_sources_trailer():
+    retr = FakeRetriever([
+        Retrieved("c1", "d", "P", "S", "one", "", 0.9, "rerank"),
+        Retrieved("c2", "d", "P", "S2", "two", "", 0.8, "rerank"),
+    ])
+    long_answer = "The pump should be inspected regularly for wear. " * 6  # >200 chars, no [#n]
+    provider = ScriptedProvider([
+        _res(tool_calls=[ToolCall("t1", "search", {"query": "x"})]),
+        _res(text=long_answer),
+    ])
+    out = await run_agent("q", retr, settings=_settings(), provider=provider)
+    assert out["answer"].endswith("Sources: [#1] [#2]")
+    assert out["citations"]["valid"] is True
+
+
+async def test_uncited_answer_trailer_appears_in_streamed_tokens():
+    retr = FakeRetriever([Retrieved("c1", "d", "P", "S", "t", "", 0.9, "rerank")])
+    long_answer = "The pump should be inspected regularly for wear and tear. " * 5
+    provider = ScriptedProvider([
+        _res(tool_calls=[ToolCall("t1", "search", {"query": "x"})]),
+        _res(text=long_answer),
+    ])
+    events = [e async for e in stream_agent("q", retr, settings=_settings(), provider=provider)]
+    tokens_text = "".join(e["text"] for e in events if e["type"] == "token")
+    assert "Sources: [#1]" in tokens_text
+    final = next(e for e in events if e["type"] == "final")
+    assert final["citations"]["valid"] is True
+
+
+async def test_orphaned_citation_is_not_papered_over():
+    """A fabricated citation (no real sources retrieved) must stay flagged."""
+    retr = FakeRetriever([])
+    provider = ScriptedProvider([_res(text="Fabricated claim [#1].")])
+    out = await run_agent("q", retr, settings=_settings(), provider=provider)
+    assert out["answer"] == "Fabricated claim [#1]."  # unchanged, not trailer-appended
+    assert out["citations"]["valid"] is False and out["citations"]["orphaned"] == [1]

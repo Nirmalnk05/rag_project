@@ -25,3 +25,20 @@ def verify_citations(answer: str, num_sources: int) -> dict:
         "used": used,
         "orphaned": orphaned,
     }
+
+
+def ensure_citations(answer: str, num_sources: int) -> tuple[str, dict]:
+    """Deterministic safety net for the 'uncited_factual' case only: real
+    sources were retrieved and the answer is grounded-looking, but the model
+    cited none of them. Appends a plain references trailer listing every
+    retrieved source and re-verifies.
+
+    Deliberately leaves the 'orphaned' case (a fabricated citation number)
+    untouched — that must stay visibly flagged, not papered over.
+    """
+    citations = verify_citations(answer, num_sources)
+    if not citations["valid"] and not citations["orphaned"] and num_sources > 0:
+        trailer = " ".join(f"[#{n}]" for n in range(1, num_sources + 1))
+        answer = f"{answer}\n\nSources: {trailer}"
+        citations = verify_citations(answer, num_sources)
+    return answer, citations

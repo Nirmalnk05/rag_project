@@ -1,7 +1,9 @@
 import pytest
 
 import src.graph as graph_mod
-from src.graph import GraphState, _route_after_grade, build_state_graph, run_graph
+from src.graph import (
+    GraphState, _route_after_grade, build_state_graph, run_graph, stream_answer,
+)
 from src.providers.base import LLMResult
 from src.retrieval import Retrieved
 
@@ -82,3 +84,71 @@ async def test_injected_chunk_is_dropped(fake_llm):
     state = await run_graph(g, "pump question")
     assert len(state["retrieval"]) == 1
     assert "Normal" in state["retrieval"][0]["text"]
+
+
+async def test_generate_node_appends_trailer_when_uncited(monkeypatch):
+    long_answer = "The pump should be inspected regularly for wear. " * 6
+
+    async def fake_complete(prompt, *, model=None, system=None, max_tokens=1024, temperature=0.0):
+        if system and "rewrite" in system.lower():
+            return LLMResult(text="rewritten query", model="m")
+        if system and "judge" in system.lower():
+            return LLMResult(text='{"verdict": "sufficient", "reason": "ok"}', model="m")
+        return LLMResult(text=long_answer, model="m")
+
+    monkeypatch.setattr(graph_mod, "complete", fake_complete)
+    r = FakeRetriever()
+    g = build_state_graph(r)
+    state = await run_graph(g, "what is alarm 4F?")
+    assert state["answer"].endswith("Sources: [#1]")
+    assert state["citations"]["valid"] is True
+
+
+async def test_stream_answer_appends_trailer_delta_when_uncited(monkeypatch):
+    long_answer = "The pump should be inspected regularly for wear and tear. " * 5
+
+    async def fake_complete(prompt, *, model=None, system=None, max_tokens=1024, temperature=0.0):
+        if system and "rewrite" in system.lower():
+            return LLMResult(text="rewritten query", model="m")
+        if system and "judge" in system.lower():
+            return LLMResult(text='{"verdict": "sufficient", "reason": "ok"}', model="m")
+        return LLMResult(text="unused", model="m")
+
+    async def fake_stream_complete(prompt, *, system=None, model=None, max_tokens=2048,
+                                   temperature=0.0):
+        for word in long_answer.split(" "):
+            yield word + " "
+
+    monkeypatch.setattr(graph_mod, "complete", fake_complete)
+    monkeypatch.setattr(graph_mod, "stream_complete", fake_stream_complete)
+
+    r = FakeRetriever()
+    g = build_state_graph(r, include_generate=False)
+    events = [e async for e in stream_answer(g, "what is alarm 4F?")]
+    tokens_text = "".join(e["text"] for e in events if e["type"] == "token")
+    assert "Sources: [#1]" in tokens_text
+    final = next(e for e in events if e["type"] == "final")
+    assert final["citations"]["valid"] is True
+
+
+async def test_stream_answer_leaves_already_valid_answer_unchanged(monkeypatch):
+    async def fake_complete(prompt, *, model=None, system=None, max_tokens=1024, temperature=0.0):
+        if system and "rewrite" in system.lower():
+            return LLMResult(text="rewritten query", model="m")
+        return LLMResult(text='{"verdict": "sufficient", "reason": "ok"}', model="m")
+
+    async def fake_stream_complete(prompt, *, system=None, model=None, max_tokens=2048,
+                                   temperature=0.0):
+        for word in ["Low ", "suction ", "pressure ", "[#1]."]:
+            yield word
+
+    monkeypatch.setattr(graph_mod, "complete", fake_complete)
+    monkeypatch.setattr(graph_mod, "stream_complete", fake_stream_complete)
+
+    r = FakeRetriever()
+    g = build_state_graph(r, include_generate=False)
+    events = [e async for e in stream_answer(g, "what is alarm 4F?")]
+    tokens_text = "".join(e["text"] for e in events if e["type"] == "token")
+    assert tokens_text == "Low suction pressure [#1]."  # no trailer appended
+    final = next(e for e in events if e["type"] == "final")
+    assert final["citations"]["valid"] is True

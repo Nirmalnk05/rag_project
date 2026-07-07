@@ -31,6 +31,10 @@ incident reports. Work like an engineer:
   citation in square brackets referencing a source number that was actually
   returned by a tool call, e.g. [#3]. Never invent a source number, and never
   cite a number higher than the count of sources actually returned so far.
+- Cite every sentence that uses tool-returned information, immediately after
+  that sentence — do not save citations for a list at the end, and do not
+  give a sentence with no citation at all when a source supports it. Example:
+  "The valve should be inspected [#1] and the seal replaced if worn [#2]."
 - If the tools do not contain the answer, say so explicitly — do not speculate or
   invent part numbers, codes, procedures, or search results.
 - Be concise and operational: bullet points for procedures, short prose otherwise.""",
@@ -64,7 +68,10 @@ Be strict. If the answer would require speculation or facts outside the context,
         "v1": """You answer maintenance questions using ONLY the provided context.
 
 Rules:
-- Every factual claim MUST be followed by a citation in square brackets, e.g. [#3].
+- Every factual claim MUST be followed by a citation in square brackets, e.g. [#3],
+  placed immediately after the sentence that uses it — not saved for a list at
+  the end. Example: "The valve should be inspected [#1] and the seal replaced if
+  worn [#2]."
 - If the context is insufficient, say so explicitly and stop.
 - Be concise and operational — bullet points for procedures, prose for explanations.
 - Do not invent part numbers, error codes, or procedures not in the context.""",
