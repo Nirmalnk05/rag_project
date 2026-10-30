@@ -1,6 +1,13 @@
 # Cloud Deployment (Kubernetes, multi-replica)
 
-The API is stateless and scales horizontally. Manifests are in `deploy/k8s/`
+The API is stateless with respect to *request handling* and scales
+horizontally, but each replica is **not** a blank process: it loads the whole
+chunk store into RAM and rebuilds the BM25 index at startup
+(`Retriever.__init__`, [src/retrieval.py:100-102](../../src/retrieval.py)). So
+replica memory scales with corpus size, cold start is corpus-proportional, and
+replicas can disagree about the corpus — see
+[aws.md §4](aws.md) for the version-skew hazard and
+[aws.md §11](aws.md) for the fix. Manifests are in `deploy/k8s/`
 (example-grade — adjust image, resources, ingress, and secrets management).
 
 ## Topology
