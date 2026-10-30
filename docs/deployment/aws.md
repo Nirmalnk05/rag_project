@@ -181,8 +181,11 @@ every old task, and if the deployment stalls or is rolled back, indefinitely.
 
 Note that during the rollout two self-consistent corpus versions are serving at
 once, so a user's successive questions can be answered from different versions.
-That is a far milder failure than mixed-version fusion, but say so in the
-release notes if a customer tracks answer stability.
+Session history is shared through Redis rather than pinned to a task, so a
+follow-up question can arrive at a task whose corpus no longer matches the
+citations in that history. This is far milder than mixed-version fusion, but if
+a customer tracks answer stability, say so in the release notes and keep
+rollouts short.
 
 **Blue/green is not free — it fights incremental ingestion.** Ingestion is
 designed to be incremental: `ingest_manifest.json` plus deterministic uuid5
@@ -242,13 +245,29 @@ So a startup script placed before `uvicorn` is sufficient:
 3. `export QDRANT_COLLECTION=<collection for v{N}>`,
 4. `exec uvicorn src.api:app --host 0.0.0.0 --port 8000`.
 
-`get_settings()` is `lru_cache`d and `dense_search` reads `s.qdrant_collection`
-per call ([retrieval.py:146](../../src/retrieval.py)), so exporting the variable
-before the process starts pins the collection for the task's lifetime — exactly
-the guarantee §4.1 step 3 needs.
+`Settings` has no `env_prefix`
+([config.py:11](../../src/config.py)), so `QDRANT_COLLECTION` maps to
+`qdrant_collection`; `get_settings()` is `lru_cache`d and `dense_search` reads
+`s.qdrant_collection` per call
+([retrieval.py:146](../../src/retrieval.py)), so exporting the variable before
+the process starts pins the collection for the task's lifetime — exactly the
+guarantee §4.1 step 3 needs. `/app/data` already exists and is owned by the
+non-root `raguser`, so the fetch can write there
+([Dockerfile:21-22](../../Dockerfile)).
 
-Give the task role read access to that one prefix. This is an ops artifact to
-own, version and test — it is why the index fetch does not appear in §9.
+**It is not literally free: the image has no S3 client.** `requirements.txt`
+contains no `boto3`, and the `python:3.12-slim` base installs no AWS CLI, so the
+entrypoint needs one added — `boto3` (a few MB, Python entrypoint) rather than
+`awscli` (~100 MB, and §11 caveat 2 is about image size on Fargate). An
+entrypoint script also has to be copied in and made executable. So this is a
+**build and ops change, not an application change** — which is why it stays off
+§9's list, and why it still needs an owner.
+
+⚠️ **Fetch atomically.** A partially completed sync leaves the task with
+artifacts from two versions — the §4.2 hazard, reintroduced at startup. Sync to
+a temporary directory, verify all seven artifacts are present, then move into
+place; fail the task rather than starting degraded. Give the task role read
+access to that one prefix.
 
 ## 5. Identity and access
 
