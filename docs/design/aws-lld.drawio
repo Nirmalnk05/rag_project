@@ -1,0 +1,163 @@
+<mxfile host="app.diagrams.net" type="device">
+  <diagram name="AWS LLD - Request Path" id="aws_lld_req">
+    <mxGraphModel dx="1460" dy="759" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="900" pageHeight="1620" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <mxCell id="lg1" value="LEGEND&#10;1,2,3… = step order&#10;Rhombus = decision&#10;Red dashed = NOT BUILT (aws.md §9)&#10;⚠ = hazard / open decision&#10;Pages: 1 request · 2 index publish · 3 task startup" style="rounded=1;whiteSpace=wrap;html=1;align=left;fillColor=#f5f5f5;strokeColor=#666666;spacingLeft=8;verticalAlign=top;spacingTop=4;" parent="1" vertex="1"><mxGeometry x="20" y="20" width="240" height="120" as="geometry"/></mxCell>
+
+        <mxCell id="c0" value="1. Client — browser (Cognito session cookie) or machine (X-API-Key)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" parent="1" vertex="1"><mxGeometry x="300" y="20" width="340" height="44" as="geometry"/></mxCell>
+        <mxCell id="c1" value="2. Route 53 + ACM -&gt; ALB listener :443 (WAF in front)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" parent="1" vertex="1"><mxGeometry x="300" y="90" width="340" height="44" as="geometry"/></mxCell>
+        <mxCell id="d1" value="3. ALB rule — which hostname?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" parent="1" vertex="1"><mxGeometry x="370" y="160" width="200" height="90" as="geometry"/></mxCell>
+
+        <mxCell id="a1" value="4A. app.example.com&#10;action: authenticate-oidc" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" parent="1" vertex="1"><mxGeometry x="40" y="280" width="300" height="44" as="geometry"/></mxCell>
+        <mxCell id="a2" value="5A. No session? 302 -&gt; Cognito Hosted UI -&gt; callback -&gt; ALB sets its session cookie" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" parent="1" vertex="1"><mxGeometry x="40" y="350" width="300" height="52" as="geometry"/></mxCell>
+        <mxCell id="a3" value="6A. ALB injects x-amzn-oidc-data — a signed JWT. ⚠ the ALB does NOT strip client X-* headers" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" parent="1" vertex="1"><mxGeometry x="40" y="428" width="300" height="52" as="geometry"/></mxCell>
+
+        <mxCell id="b1" value="4B. api.example.com&#10;no OIDC action (machine callers)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" parent="1" vertex="1"><mxGeometry x="600" y="280" width="270" height="44" as="geometry"/></mxCell>
+        <mxCell id="b2" value="5B. X-API-Key passes through. A path-only split cannot work — the UI calls the same /ask (§5.2)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" parent="1" vertex="1"><mxGeometry x="600" y="350" width="270" height="52" as="geometry"/></mxCell>
+
+        <mxCell id="tg" value="7. Target group -&gt; ECS task  (health checks go direct to the target and bypass listener rules)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" parent="1" vertex="1"><mxGeometry x="280" y="520" width="380" height="52" as="geometry"/></mxCell>
+
+        <mxCell id="s8" value="8. require_api_key — accept a verified JWT (browser) OR X-API-Key (machine)&#10;NOT BUILT — §9 item 3. Today the UI pastes a shared key into localStorage" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;dashed=1;dashPattern=8 4;" parent="1" vertex="1"><mxGeometry x="260" y="600" width="420" height="56" as="geometry"/></mxCell>
+        <mxCell id="s9" value="9. Rate limit (ElastiCache Redis)  -&gt;  Guardrails.screen_input(query)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" parent="1" vertex="1"><mxGeometry x="260" y="680" width="420" height="44" as="geometry"/></mxCell>
+        <mxCell id="s10" value="10. Verify the JWT against the ALB regional public key -&gt; AccessContext(roles, sites)&#10;NOT BUILT — §9 item 1. Needs ENABLE_ACL=true and claims mapped to acl_roles / acl_sites, or every chunk stays public" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;dashed=1;dashPattern=8 4;" parent="1" vertex="1"><mxGeometry x="260" y="748" width="420" height="64" as="geometry"/></mxCell>
+        <mxCell id="s11" value="11. Orchestrator — session history from Redis; semantic cache is inert because ACLs are on (§5.3)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1"><mxGeometry x="260" y="840" width="420" height="52" as="geometry"/></mxCell>
+
+        <mxCell id="d2" value="12. Dispatch by AGENT_MODE" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1"><mxGeometry x="350" y="920" width="240" height="90" as="geometry"/></mxCell>
+        <mxCell id="ag" value="13A. agent — provider.chat(messages, tools) then execute tools, loop to agent_max_steps" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1"><mxGeometry x="40" y="1040" width="300" height="56" as="geometry"/></mxCell>
+        <mxCell id="pp" value="13B. pipeline — LangGraph: rewrite -&gt; retrieve -&gt; grader -&gt; (retry) -&gt; generate" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1"><mxGeometry x="600" y="1040" width="270" height="56" as="geometry"/></mxCell>
+
+        <mxCell id="rt" value="14. hybrid_retrieve — BM25 over in-task RAM  ∥  Qdrant dense over NAT  -&gt;  RRF(k=60)  -&gt;  cross-encoder rerank&#10;⚠ _embed_lock / _rerank_lock serialize this per task: a task can be saturated while looking CPU-idle (§7.2)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1"><mxGeometry x="180" y="1130" width="560" height="56" as="geometry"/></mxCell>
+
+        <mxCell id="d3" value="15. Qdrant reachable?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1"><mxGeometry x="370" y="1210" width="200" height="90" as="geometry"/></mxCell>
+        <mxCell id="deg" value="No -&gt; today the whole request fails (gather without return_exceptions).&#10;Proposed: BM25-only answer + a degraded flag on the response and a metric&#10;NOT BUILT — §9 item 4" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;dashed=1;dashPattern=8 4;" parent="1" vertex="1"><mxGeometry x="620" y="1215" width="260" height="80" as="geometry"/></mxCell>
+
+        <mxCell id="llm" value="16. Amazon Bedrock InvokeModel via VPC endpoint&#10;NOT BUILT — §9 item 8. Throttling must raise LLMRetryableError or call_with_retries will not back off" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;dashed=1;dashPattern=8 4;" parent="1" vertex="1"><mxGeometry x="260" y="1330" width="420" height="60" as="geometry"/></mxCell>
+        <mxCell id="po" value="17. Post-generation — ensure_citations (verify + Sources trailer) · faithfulness LLM judge (optional) · safety escalation · metrics" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" parent="1" vertex="1"><mxGeometry x="260" y="1415" width="420" height="52" as="geometry"/></mxCell>
+        <mxCell id="pe" value="18. Persist — session turn -&gt; Redis (shared, survives the task) · feedback -&gt; S3 / DynamoDB (§9 item 6; a local JSONL dies with the task)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1"><mxGeometry x="260" y="1490" width="420" height="52" as="geometry"/></mxCell>
+        <mxCell id="rp" value="19. Respond — JSON, or SSE token stream&#10;⚠ agent_max_steps (6) × llm_timeout_s (60 s) can reach ~6 min; the ALB idle timeout defaults to 60 s (§5.2)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" parent="1" vertex="1"><mxGeometry x="240" y="1560" width="460" height="52" as="geometry"/></mxCell>
+
+        <mxCell id="e1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" parent="1" source="c0" target="c1" edge="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" parent="1" source="c1" target="d1" edge="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" parent="1" source="d1" target="a1" edge="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e4" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" parent="1" source="d1" target="b1" edge="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" parent="1" source="a1" target="a2" edge="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" parent="1" source="a2" target="a3" edge="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e7" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" parent="1" source="b1" target="b2" edge="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e8" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" parent="1" source="a3" target="tg" edge="1"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="190" y="500"/><mxPoint x="370" y="500"/></Array></mxGeometry></mxCell>
+        <mxCell id="e9" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" parent="1" source="b2" target="tg" edge="1"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="735" y="500"/><mxPoint x="570" y="500"/></Array></mxGeometry></mxCell>
+        <mxCell id="e10" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" parent="1" source="tg" target="s8" edge="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e11" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" parent="1" source="s8" target="s9" edge="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e12" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" parent="1" source="s9" target="s10" edge="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e13" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" parent="1" source="s10" target="s11" edge="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e14" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" parent="1" source="s11" target="d2" edge="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e15" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" parent="1" source="d2" target="ag" edge="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e16" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" parent="1" source="d2" target="pp" edge="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e17" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" parent="1" source="ag" target="rt" edge="1"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="190" y="1115"/><mxPoint x="290" y="1115"/></Array></mxGeometry></mxCell>
+        <mxCell id="e18" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" parent="1" source="pp" target="rt" edge="1"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="735" y="1115"/><mxPoint x="630" y="1115"/></Array></mxGeometry></mxCell>
+        <mxCell id="e19" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" parent="1" source="rt" target="d3" edge="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e20" value="no" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;dashed=1;" parent="1" source="d3" target="deg" edge="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e21" value="yes" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" parent="1" source="d3" target="llm" edge="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e22" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" parent="1" source="llm" target="po" edge="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e23" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" parent="1" source="po" target="pe" edge="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e24" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" parent="1" source="pe" target="rp" edge="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+
+  <diagram name="AWS LLD - Index Publish (blue/green)" id="aws_lld_pub">
+    <mxGraphModel dx="1460" dy="759" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="900" pageHeight="1280" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <mxCell id="lg2" value="LEGEND&#10;Blue/green is the only option with zero index skew.&#10;Pinning a task to a version removes mixed-version&#10;fusion but leaves the task skewed against Qdrant&#10;for its whole lifetime (aws.md §4.1)." style="rounded=1;whiteSpace=wrap;html=1;align=left;fillColor=#f5f5f5;strokeColor=#666666;spacingLeft=8;verticalAlign=top;spacingTop=4;" parent="1" vertex="1"><mxGeometry x="20" y="20" width="250" height="110" as="geometry"/></mxCell>
+
+        <mxCell id="p0" value="1. Raw documents uploaded to s3://…/raw/" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" parent="1" vertex="1"><mxGeometry x="300" y="20" width="330" height="44" as="geometry"/></mxCell>
+        <mxCell id="p1" value="2. EventBridge rule or schedule -&gt; run the ECS ingestion task&#10;not Lambda — Docling / OCR dependency size and runtime exceed its limits" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" parent="1" vertex="1"><mxGeometry x="280" y="90" width="370" height="52" as="geometry"/></mxCell>
+
+        <mxCell id="d1" value="3. PARSE_BACKEND?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1"><mxGeometry x="370" y="170" width="200" height="90" as="geometry"/></mxCell>
+        <mxCell id="pl" value="4A. local — recommended for AWS. Nothing leaves the account" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1"><mxGeometry x="40" y="290" width="270" height="52" as="geometry"/></mxCell>
+        <mxCell id="pc" value="4B. hybrid (today's default) — a parse under 200 chars re-sends the whole document to LlamaParse / Azure&#10;⚠ source documents leave the account (§6.3)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" parent="1" vertex="1"><mxGeometry x="620" y="285" width="260" height="70" as="geometry"/></mxCell>
+
+        <mxCell id="p2" value="5. ingest.py — parse -&gt; chunk -&gt; contextual augment + figure captions -&gt; diff manifest by content hash" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" parent="1" vertex="1"><mxGeometry x="280" y="380" width="370" height="52" as="geometry"/></mxCell>
+        <mxCell id="p3" value="6. Create a NEW Qdrant collection for v{N+1}" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1"><mxGeometry x="300" y="455" width="330" height="44" as="geometry"/></mxCell>
+
+        <mxCell id="d2" value="7. Full republish, or snapshot + delta?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1"><mxGeometry x="345" y="520" width="240" height="90" as="geometry"/></mxCell>
+        <mxCell id="fr" value="8A. Re-upsert every vector (deterministic uuid5 ids)&#10;⚠ a full write — and a full re-embed — on every publish (§10)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1"><mxGeometry x="40" y="635" width="270" height="62" as="geometry"/></mxCell>
+        <mxCell id="sd" value="8B. Snapshot v{N} -&gt; restore it as v{N+1} -&gt; apply only the manifest delta&#10;Cheaper per publish; needs a tested restore path" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1"><mxGeometry x="620" y="635" width="260" height="62" as="geometry"/></mxCell>
+
+        <mxCell id="p4" value="9. Write ALL SEVEN artifacts to the immutable prefix s3://…/index/v{N+1}/&#10;chunks.json · ingest_manifest.json · context_cache.json · caption_cache.json · index_meta.json · acl.json · versions.json&#10;acl.json is why a partial set is a security problem, not just a quality one (§4.2)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" parent="1" vertex="1"><mxGeometry x="230" y="730" width="440" height="76" as="geometry"/></mxCell>
+
+        <mxCell id="d3" value="10. All seven present?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1"><mxGeometry x="370" y="830" width="200" height="90" as="geometry"/></mxCell>
+        <mxCell id="ab" value="No -&gt; abort and leave the pointer on v{N}. Never publish a partial set" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" parent="1" vertex="1"><mxGeometry x="620" y="845" width="260" height="60" as="geometry"/></mxCell>
+
+        <mxCell id="p5" value="11. Atomic pointer flip — s3://…/index/current = { collection, prefix }&#10;one object names both halves, so a task can never hold one version of one half" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1" parent="1" vertex="1"><mxGeometry x="250" y="950" width="400" height="56" as="geometry"/></mxCell>
+        <mxCell id="p6" value="12. Force an ECS rolling redeploy of the service" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" parent="1" vertex="1"><mxGeometry x="280" y="1030" width="340" height="44" as="geometry"/></mxCell>
+        <mxCell id="p7" value="13. Old tasks drain on v{N}; new tasks start on v{N+1} (page 3)&#10;⚠ two self-consistent versions serve at once, and Redis session history is shared — a follow-up can reach a task whose corpus no longer matches the citations in that history" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1"><mxGeometry x="220" y="1100" width="460" height="70" as="geometry"/></mxCell>
+        <mxCell id="p8" value="14. After the retention window — drop collection v{N}, expire the old S3 prefix" style="shape=cylinder3;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" parent="1" vertex="1"><mxGeometry x="300" y="1190" width="300" height="70" as="geometry"/></mxCell>
+
+        <mxCell id="f1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" parent="1" source="p0" target="p1" edge="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="f2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" parent="1" source="p1" target="d1" edge="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="f3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" parent="1" source="d1" target="pl" edge="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="f4" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;dashed=1;" parent="1" source="d1" target="pc" edge="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="f5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" parent="1" source="pl" target="p2" edge="1"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="175" y="360"/><mxPoint x="350" y="360"/></Array></mxGeometry></mxCell>
+        <mxCell id="f6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;dashed=1;" parent="1" source="pc" target="p2" edge="1"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="750" y="360"/><mxPoint x="580" y="360"/></Array></mxGeometry></mxCell>
+        <mxCell id="f7" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" parent="1" source="p2" target="p3" edge="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="f8" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" parent="1" source="p3" target="d2" edge="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="f9" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" parent="1" source="d2" target="fr" edge="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="f10" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" parent="1" source="d2" target="sd" edge="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="f11" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" parent="1" source="fr" target="p4" edge="1"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="175" y="715"/><mxPoint x="340" y="715"/></Array></mxGeometry></mxCell>
+        <mxCell id="f12" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" parent="1" source="sd" target="p4" edge="1"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="750" y="715"/><mxPoint x="560" y="715"/></Array></mxGeometry></mxCell>
+        <mxCell id="f13" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" parent="1" source="p4" target="d3" edge="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="f14" value="no" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;dashed=1;" parent="1" source="d3" target="ab" edge="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="f15" value="yes" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" parent="1" source="d3" target="p5" edge="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="f16" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" parent="1" source="p5" target="p6" edge="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="f17" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" parent="1" source="p6" target="p7" edge="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="f18" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;dashed=1;" parent="1" source="p7" target="p8" edge="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+
+  <diagram name="AWS LLD - Task Startup &amp; Readiness" id="aws_lld_boot">
+    <mxGraphModel dx="1460" dy="759" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="900" pageHeight="1120" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <mxCell id="lg3" value="LEGEND&#10;Steps 2–8 are a container entrypoint — an ops&#10;artifact, not application code (aws.md §4.3).&#10;It does need boto3 added to the image: there is&#10;no AWS CLI in python:3.12-slim." style="rounded=1;whiteSpace=wrap;html=1;align=left;fillColor=#f5f5f5;strokeColor=#666666;spacingLeft=8;verticalAlign=top;spacingTop=4;" parent="1" vertex="1"><mxGeometry x="20" y="20" width="220" height="130" as="geometry"/></mxCell>
+
+        <mxCell id="t0" value="1. ECS schedules a task (rolling deploy, or scale-out)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" parent="1" vertex="1"><mxGeometry x="300" y="20" width="330" height="44" as="geometry"/></mxCell>
+        <mxCell id="t1" value="2. Pull the image from ECR&#10;⚠ Fargate has no host image cache — every task start pulls. Baking models in (PREFETCH_MODELS) trades a one-off download for a multi-GB pull on every scale-out; use SOCI or keep the image lean (§11 caveat 2)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" parent="1" vertex="1"><mxGeometry x="250" y="90" width="430" height="76" as="geometry"/></mxCell>
+        <mxCell id="t2" value="3. Entrypoint script starts (before uvicorn)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" parent="1" vertex="1"><mxGeometry x="300" y="190" width="330" height="44" as="geometry"/></mxCell>
+        <mxCell id="t3" value="4. Read the pointer object s3://…/index/current -&gt; { collection, prefix }" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" parent="1" vertex="1"><mxGeometry x="270" y="258" width="390" height="44" as="geometry"/></mxCell>
+        <mxCell id="t4" value="5. Sync s3://…/index/v{N}/ into a staging directory (task role: read on that one prefix)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" parent="1" vertex="1"><mxGeometry x="260" y="326" width="410" height="52" as="geometry"/></mxCell>
+
+        <mxCell id="d1" value="6. All seven artifacts present?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1"><mxGeometry x="365" y="400" width="200" height="90" as="geometry"/></mxCell>
+        <mxCell id="tf" value="No -&gt; exit non-zero; ECS replaces the task.&#10;A partial sync would reintroduce the §4.2 hazard at startup — never start degraded" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" parent="1" vertex="1"><mxGeometry x="620" y="410" width="260" height="70" as="geometry"/></mxCell>
+
+        <mxCell id="t5" value="7. Move staging -&gt; /app/data atomically&#10;the directory already exists and is owned by the non-root raguser" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1"><mxGeometry x="260" y="520" width="410" height="52" as="geometry"/></mxCell>
+        <mxCell id="t6" value="8. export QDRANT_COLLECTION=&lt;collection for v{N}&gt;  then exec uvicorn&#10;Settings has no env_prefix, so the field name maps straight to the variable" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1"><mxGeometry x="250" y="594" width="430" height="52" as="geometry"/></mxCell>
+        <mxCell id="t7" value="9. FastAPI lifespan: Retriever() -&gt; json.load(chunks.json) + build BM25Okapi over every chunk + load embedder and cross-encoder&#10;⚠ 30–120 s and corpus-proportional — this is the cold start that makes reactive autoscaling ineffective (§7.3)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1"><mxGeometry x="230" y="668" width="460" height="76" as="geometry"/></mxCell>
+        <mxCell id="t8" value="10. /ready returns 200 once the retriever and orchestrator objects exist&#10;⚠ it does NOT probe Qdrant or Redis, so a task reports healthy while a critical dependency is unreachable — NOT BUILT, §9 item 5" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;dashed=1;dashPattern=8 4;" parent="1" vertex="1"><mxGeometry x="230" y="766" width="460" height="72" as="geometry"/></mxCell>
+        <mxCell id="t9" value="11. ALB target-group health check (direct to the target, bypassing listener rules) -&gt; target healthy -&gt; traffic arrives" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" parent="1" vertex="1"><mxGeometry x="250" y="860" width="430" height="52" as="geometry"/></mxCell>
+        <mxCell id="t10" value="12. get_settings() is lru_cached and the corpus is read once, so this task is pinned to v{N} for its whole lifetime — the guarantee page 2 step 11 depends on" style="shape=cylinder3;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" parent="1" vertex="1"><mxGeometry x="250" y="940" width="430" height="90" as="geometry"/></mxCell>
+
+        <mxCell id="g1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" parent="1" source="t0" target="t1" edge="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="g2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" parent="1" source="t1" target="t2" edge="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="g3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" parent="1" source="t2" target="t3" edge="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="g4" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" parent="1" source="t3" target="t4" edge="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="g5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" parent="1" source="t4" target="d1" edge="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="g6" value="no" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;dashed=1;" parent="1" source="d1" target="tf" edge="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="g7" value="yes" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" parent="1" source="d1" target="t5" edge="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="g8" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" parent="1" source="t5" target="t6" edge="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="g9" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" parent="1" source="t6" target="t7" edge="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="g10" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" parent="1" source="t7" target="t8" edge="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="g11" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" parent="1" source="t8" target="t9" edge="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="g12" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;dashed=1;" parent="1" source="t9" target="t10" edge="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

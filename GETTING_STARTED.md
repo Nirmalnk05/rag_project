@@ -277,4 +277,7 @@ curl -N -X POST http://localhost:8000/ask/stream \
 | `docs/deployment/operations.md` | Metrics, prompt versioning, embedding migration, backup/restore, queued ingestion. |
 | `docs/design/hld.drawio` | High-level architecture diagram (editable in [diagrams.net](https://app.diagrams.net)). |
 | `docs/design/lld.drawio` | Low-level flowcharts: per-query runtime flow and the ingestion flow. |
+| `docs/deployment/aws.md` | AWS deployment design proposal (ECS Fargate) — reviewed against the code, with the changes it still needs. |
+| `docs/design/aws-hld.drawio` | High-level AWS deployment diagram: VPC boundaries, managed services, egress paths. |
+| `docs/design/aws-lld.drawio` | Low-level AWS flowcharts: request path, index publish (blue/green), task startup. |
 | `docs/superpowers/specs/…`, `docs/superpowers/plans/…` | Internal design spec and implementation plan written while building this system — historical reference. |

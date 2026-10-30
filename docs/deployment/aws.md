@@ -698,3 +698,9 @@ pass left in the body.
 
 Companion documents: [cloud.md](cloud.md) (generic Kubernetes),
 [on-prem-airgapped.md](on-prem-airgapped.md), [operations.md](operations.md).
+
+Diagrams: [aws-hld.drawio](../design/aws-hld.drawio) (deployment topology) and
+[aws-lld.drawio](../design/aws-lld.drawio) (request path · index publish · task
+startup). They mark anything from §9 as not built, so they read as a proposal
+rather than as current state. The on-prem equivalents are
+[hld.drawio](../design/hld.drawio) and [lld.drawio](../design/lld.drawio).
