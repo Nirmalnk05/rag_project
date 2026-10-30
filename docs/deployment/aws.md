@@ -4,11 +4,10 @@
 > executed against a live AWS account. Service names, IAM shapes and pricing
 > must be re-checked against current AWS docs before you build.
 >
-> **Reviewed against the codebase on 2026-10-30.** Several service choices in
-> §2 are *not* drop-in — they require application changes, now listed in §9.
-> Where a claim rests on code, the file and line are cited so the next reader
-> can re-verify rather than trust. See the review log at the end for what
-> changed.
+> **Claims about this codebase are cited to file and line** so the next reader
+> can re-verify rather than trust. Several service choices in §2 need
+> application changes first; those are §9. The review log records what has been
+> checked and when.
 >
 > The generic Kubernetes guide in [cloud.md](cloud.md) remains the source of
 > truth for manifest-level detail; this document is the AWS-specific binding
@@ -22,7 +21,7 @@ environment switches. We do **not** fork the design.
 
 | Seam | Env var | On-prem | AWS |
 |---|---|---|---|
-| LLM backend | `LLM_PROVIDER` | `ollama` | `bedrock` (**new — §9 item 6**) or `openai_compatible` via proxy |
+| LLM backend | `LLM_PROVIDER` | `ollama` | `bedrock` (**new — §9 item 8**) or `openai_compatible` via proxy |
 | Session memory | `MEMORY_BACKEND` | `memory` | `redis` |
 | Rate limiting | `RATE_LIMIT_BACKEND` | `memory` | `redis` |
 | Parsing | `PARSE_BACKEND` | `hybrid` (the default) | **`local` — set it explicitly, see §6.3** |
@@ -39,13 +38,11 @@ rather than on a decision anyone made. Make it a decision — §6.3.
 
 ### 1.1 Seams this design assumes that do not exist yet
 
-Three bindings below are work items (§9), not configuration:
-
-| Assumed binding | Reality in the code |
-|---|---|
-| Identity provider | No `IDENTITY_BACKEND`. Identity is derived from client headers only ([api.py:170-174](../../src/api.py)) |
-| Vector-store endpoint | Only `QDRANT_HOST` / `QDRANT_PORT` ([config.py:32-33](../../src/config.py)) — no URL, API key or TLS, so **managed Qdrant cannot be addressed at all** |
-| Index location | `CHUNK_STORE_PATH` is a hardcoded `Path("data/chunks.json")` in both [retrieval.py:21](../../src/retrieval.py) and [ingestion.py:24](../../src/ingestion.py) — not a setting |
+| Assumed binding | Reality in the code | Resolution |
+|---|---|---|
+| Identity provider | No `IDENTITY_BACKEND`. Identity is derived from client headers only ([api.py:170-174](../../src/api.py)) | §9 item 1 |
+| Vector-store endpoint | Only `QDRANT_HOST` / `QDRANT_PORT` ([config.py:32-33](../../src/config.py)) — no URL, API key or TLS, so **managed Qdrant cannot be addressed at all** | §9 item 2 |
+| Index location | `CHUNK_STORE_PATH` is a hardcoded relative `Path("data/chunks.json")` in both [retrieval.py:21](../../src/retrieval.py) and [ingestion.py:24](../../src/ingestion.py) | **No code change needed** — §4.3 |
 
 **What must stay identical in both environments:** retrieval logic, chunking,
 prompts (`PROMPT_VERSION`) and the eval suite. If those drift, a quality
@@ -62,18 +59,19 @@ secrets delivery, identity provider, LLM backend.
 |---|---|---|---|
 | Compute | **ECS Fargate** | — | Decided — §3. On-prem is Docker Compose, so EKS's parity argument does not apply |
 | Vector store | **Qdrant Cloud (AWS region)** | **§9 item 2** | Unaddressable today: all three clients use host/port with no API key. Also see the residency consequence in §6.2 |
-| Shared state | **ElastiCache for Redis** | — | Rate-limit counter and session memory. *Not* the semantic cache — see §5.3 |
-| LLM | **Amazon Bedrock** (Anthropic models) | **§9 item 6** | Requires explicit model-access enablement per account/region |
+| Shared state | **ElastiCache for Redis** | — | Rate-limit counter and session memory. The semantic cache joins it only after §9 item 9 — see §5.3 |
+| LLM | **Amazon Bedrock** (Anthropic models) | **§9 item 8** | Requires explicit model-access enablement per account/region |
 | Embeddings / rerank | In-process `sentence-transformers` | — | BGE-small + bge-reranker-base. CPU is adequate at low QPS — §7.1 |
-| Index artifacts | **S3** | **§9 items 3, 5** | Versioned prefix holding all seven artifacts — §4 |
+| Index artifacts | **S3** | Entrypoint (§4.3); backups §9 item 7 | Versioned prefix holding all seven artifacts — §4 |
 | Ingestion | **ECS task** (scheduled or S3 → EventBridge triggered) | — | `scripts/ingest.py` unchanged. Not Lambda — Docling/OCR dependency size and runtime exceed its limits |
-| Identity | **ALB + Cognito (OIDC)** | **§9 item 1** | Replaces today's spoofable header ACL — §5. Browser flows only; §5.2 for machine traffic |
+| Identity | **ALB + Cognito (OIDC)** | **§9 items 1, 3** | Replaces today's spoofable header ACL — §5. Browser and machine callers share paths — §5.2 |
 | Secrets | **Secrets Manager** / SSM Parameter Store | — | Injected as env vars; never baked into the image |
-| Metrics / logs | **AMP** + **AMG**, CloudWatch Logs | — | `/metrics` is already Prometheus-format. Scrape it inside the VPC, not through the ALB (§5.2) |
+| Metrics / logs | **AMP** + **AMG**, CloudWatch Logs | — | `/metrics` is already Prometheus-format, and unauthenticated — deny it at the ALB and scrape inside the VPC (§5.2) |
 | Tracing | Self-hosted Langfuse *or* disabled | — | §8 — data residency |
 
-Four rows carry code prerequisites. An earlier draft of this document assumed
-all of them for free. **§2 is not buildable until §9 items 2 and 3 land.**
+**§2 is not buildable until §9 item 2 lands**: the current Qdrant client cannot
+address a managed endpoint. The index-artifact row needs an ops artifact rather
+than a code change (§4.3).
 
 ## 3. Compute: ECS Fargate (decided)
 
@@ -87,10 +85,9 @@ entirely, leaving only its costs: a per-cluster control-plane charge, cluster
 upgrades, and add-on/IRSA/CNI operations.
 
 The decision rests on **single-digit replica counts and a small operations
-team**, not on the corpus ceiling. (An earlier draft justified Fargate partly
-by the ~1k–5k document ceiling. That ceiling is a property of the current
-serving design and something §11 proposes to remove, so it should not be
-load-bearing in a compute choice.)
+team**. It deliberately does *not* rest on the corpus ceiling: that ceiling is a
+property of the current serving design which §11 proposes to remove, so it
+should not be load-bearing in a compute choice.
 
 `deploy/k8s/` stays in the repo as a maintained *optional* path, for two cases:
 
@@ -101,7 +98,8 @@ load-bearing in a compute choice.)
 ```
                     ┌──────────────── Route 53 + ACM (TLS) ────────────────┐
                     ▼
-        ALB  ·  rule 1: authenticate-oidc (UI)  ·  rule 2: API key (machines)
+        ALB  ·  app.example.com → authenticate-oidc   (browser + UI)
+             ·  api.example.com → no OIDC, API key    (machines, §5.2)
                     │   injects signed x-amzn-oidc-data
                     ▼
       ECS Fargate service  ·  rag-app  ·  N tasks  (private subnets)
@@ -111,7 +109,7 @@ load-bearing in a compute choice.)
          └──────────────────────────── Qdrant                 [dense + chunk payloads]
                                         └─ Cloud ⇒ NAT egress, off-account (§6.2)
 
-      task start: fetch s3://…/index/v{N}/*  (all 7 artifacts)  [S3 gateway endpoint]
+      entrypoint: resolve pointer → s3 sync index/v{N}/ → /app/data/  (§4.3)
 
       Ingestion (separate ECS task, scheduled or S3-triggered):
           S3 raw docs → ingest.py → Qdrant collection v{N+1} + S3 index/v{N+1}/
@@ -120,7 +118,7 @@ load-bearing in a compute choice.)
 
 ### 3.1 Task sizing
 
-An earlier draft gave none. A derivable floor, in order of size:
+A derivable floor, in order of size:
 
 - The full `chunks.json` corpus held as Python dicts **plus** the `BM25Okapi`
   term structures built over every chunk
@@ -131,11 +129,16 @@ An earlier draft gave none. A derivable floor, in order of size:
   [config.py:37-38](../../src/config.py)) — order of 0.5–1 GB.
 - FastAPI/uvicorn and the per-request working set.
 
-**Start at 2 vCPU / 8 GB, then measure.** Take RSS after `/ready` goes green
-against the production corpus and set memory to roughly 1.5× observed peak. Do
-not size from the numbers above — they are a shape, not a measurement. Fargate
-ephemeral storage defaults to 20 GiB and holds the image plus the HF cache,
-which matters for §11 caveat 2.
+**Start at 2 vCPU / 8 GB, then measure.** The numbers above are a shape, not a
+measurement, and this is measurable today rather than at deploy time: run the
+app against the production corpus and read the process RSS once `/ready` returns
+200 (`docker stats`, or `ps -o rss= -p <pid>` inside the container). Set memory
+to roughly 1.5× observed peak and re-measure whenever the corpus grows
+materially. Expect 16 GB at the upper end of the ceiling; 2 vCPU on Fargate
+supports up to 16 GB, beyond which the vCPU count has to rise too.
+
+Fargate ephemeral storage defaults to 20 GiB and holds the image plus the HF
+cache, which matters for §11 caveat 2.
 
 ## 4. Index distribution and the version-skew hazard
 
@@ -151,40 +154,57 @@ while querying a Qdrant that already holds the new one. Fused results (RRF)
 then mix two corpus versions, and chunk IDs present in one but not the other
 produce inconsistent citations.
 
-### 4.1 What version-pinning actually buys
+### 4.1 Choosing a cutover strategy
 
-An earlier draft prescribed a versioned S3 prefix plus a per-task version pin
-and described the residual skew as "a brief window." That was wrong.
-**Pinning does not remove the skew — it makes each task internally consistent
-while leaving it inconsistent with Qdrant.** A task pinned to `v{N}` serves
-BM25 over `v{N}` for its *whole lifetime* against a Qdrant already at `v{N+1}`.
-During a rolling deploy that lasts the full drain of every old task, and if the
-deployment stalls or is rolled back, indefinitely.
+Pinning each task to one index version does **not** remove the skew — it makes
+each task internally consistent while leaving it inconsistent with Qdrant. A
+task pinned to `v{N}` serves BM25 over `v{N}` for its *whole lifetime* against a
+Qdrant already at `v{N+1}`. During a rolling deploy that lasts the full drain of
+every old task, and if the deployment stalls or is rolled back, indefinitely.
 
 | Option | Skew | Cost |
 |---|---|---|
 | Shared mutable `chunks.json` on EFS | Unbounded and invisible | Lowest |
 | Versioned S3 prefix + per-task pin + rolling restart | Bounded by drain time, but **present on every old task for the whole rollout** | Low |
-| **Blue/green: a new Qdrant collection per index version** | **None** | One extra collection's storage during cutover |
+| **Blue/green: a new Qdrant collection per index version** | **None** | A full republish per index version — see below |
 
-**Recommendation: blue/green.** It is the only option that actually eliminates
-the hazard, and an earlier draft buried it in a sub-clause.
+**Recommendation: blue/green**, as the only option that eliminates the hazard.
 
 1. Ingestion writes index `v{N+1}` to a **new Qdrant collection** *and* a new
    immutable S3 prefix `s3://…/index/v{N+1}/`.
 2. On success it flips **one** pointer object naming *both* halves — collection
    name and S3 prefix.
 3. Each task reads that pointer once at startup and takes both halves from the
-   same version, so a task can never hold one version of one half.
+   same version, so a task can never hold one version of one half (§4.3).
 4. A rolling redeploy then cuts over; old tasks stay fully self-consistent on
    `v{N}` until they drain. Drop the old collection after a retention window.
 
-This requires `QDRANT_COLLECTION` to come from the pointer rather than static
-config — a small addition to §9 item 3.
+Note that during the rollout two self-consistent corpus versions are serving at
+once, so a user's successive questions can be answered from different versions.
+That is a far milder failure than mixed-version fusion, but say so in the
+release notes if a customer tracks answer stability.
+
+**Blue/green is not free — it fights incremental ingestion.** Ingestion is
+designed to be incremental: `ingest_manifest.json` plus deterministic uuid5
+point IDs mean a re-run upserts only what changed, into one collection. A new
+collection per version means every vector is written again on every publish, so
+near the ~100k-chunk ceiling each publish costs a full re-upload — and a full
+re-embed unless vectors are carried across. Two ways out, both needing a
+decision:
+
+- **Snapshot and delta** — snapshot the live collection, restore it under the
+  new version's name, then apply only the manifest delta. Cheaper per publish,
+  more moving parts, and it needs a tested restore path.
+- **Accept the full republish** — simplest, and fine when ingestion is
+  infrequent (nightly or weekly) and the corpus sits near the low end of §3.1.
+
+If neither is acceptable, fall back to the pinned-prefix row and accept bounded
+skew during rollouts — but record that as a decision rather than discovering it
+in production.
 
 ### 4.2 Version the prefix, not the file
 
-An earlier draft versioned `chunks.json` alone. There are **seven** artifacts
+There are **seven** index artifacts
 ([backup_index.py:17-18](../../scripts/backup_index.py)), and all of them must
 move together:
 
@@ -202,6 +222,33 @@ move together:
 
 Do **not** mount these from a live-mutating shared filesystem (EFS) — that
 reintroduces skew without the version pin.
+
+### 4.3 This needs a container entrypoint, not application code
+
+Worth stating plainly, because it is easy to over-scope: **§4 requires no change
+to the application.**
+
+- `Retriever()` is constructed with no arguments in the lifespan handler
+  ([api.py:39](../../src/api.py)), so it reads the default relative path
+  `data/chunks.json`.
+- `.dockerignore` already excludes `data/chunks.json` from the image — the
+  container is built expecting an index to be supplied at run time.
+- The image sets `WORKDIR /app` and has a bare `CMD` with no `ENTRYPOINT`.
+
+So a startup script placed before `uvicorn` is sufficient:
+
+1. read the pointer object,
+2. `aws s3 sync s3://…/index/v{N}/ /app/data/`,
+3. `export QDRANT_COLLECTION=<collection for v{N}>`,
+4. `exec uvicorn src.api:app --host 0.0.0.0 --port 8000`.
+
+`get_settings()` is `lru_cache`d and `dense_search` reads `s.qdrant_collection`
+per call ([retrieval.py:146](../../src/retrieval.py)), so exporting the variable
+before the process starts pins the collection for the task's lifetime — exactly
+the guarantee §4.1 step 3 needs.
+
+Give the task role read access to that one prefix. This is an ops artifact to
+own, version and test — it is why the index fetch does not appear in §9.
 
 ## 5. Identity and access
 
@@ -237,17 +284,42 @@ Suggested shape: an `IDENTITY_BACKEND=headers|oidc` switch mirroring the
 existing backend-switch pattern, so on-prem keeps trusted-header behaviour and
 cloud requires verified claims.
 
-### 5.2 ALB + Cognito is a browser flow — plan for machine traffic
+### 5.2 Three credentials, and the browser is the hard case
 
-`authenticate-oidc` is a redirect-and-cookie flow. Non-browser callers get a
-302 to a Cognito login page instead of a response: the eval harness, CI, any
-integration POSTing `/ask`, and anything scraping `/metrics` through the ALB.
+The chat UI is served by **this same application** at `/`
+([api.py:112](../../src/api.py)), and every endpoint that does real work already
+requires an API key — `/ask`, `/ask/stream`, `/feedback`, `/session/reset`
+([api.py:128,144,156,177,219](../../src/api.py)). The UI obtains that key from a
+text box and keeps it in `localStorage`
+([static/index.html:52,65-66](../../src/static/index.html)).
 
-- Keep **two listener rules**: `authenticate-oidc` for UI paths, and an
-  API-key rule (the existing `require_api_key` dependency) for machine paths.
+Adding ALB + Cognito therefore puts three credentials in play on the same paths,
+and the design has to say which authorizes what:
+
+| Credential | Issued by | What it should establish |
+|---|---|---|
+| Cognito session cookie | ALB | That a human is signed in |
+| `x-amzn-oidc-data` JWT | ALB | **Identity for ACL filtering** (§5.1) |
+| `X-API-Key` | Us, shared | Machine callers only |
+
+**Browser traffic must stop needing `X-API-Key`.** Otherwise SSO users still
+paste a shared secret into a text box — the exact thing OIDC was meant to
+remove — and that secret sits in `localStorage` on every user's machine. So
+`require_api_key` has to accept a verified JWT as an alternative, and the API-key
+box comes out of the UI. That is **§9 item 3**, and it lands with item 1 or the
+rollout is worse than what it replaces.
+
+**Machine callers cannot be separated by path**, because they use the same ones
+the UI does. Separate them by **hostname** — a second listener or ALB,
+`api.example.com` with no `authenticate-oidc` and the API key enforced in-app —
+or by a dedicated prefix the UI never calls. A rule over `/ask` alone will
+either lock out the eval harness and CI, or leave the UI unauthenticated.
+
 - ALB **health checks bypass listener rules** — they hit the target directly —
-  so `/ready` works either way. `/metrics` through the ALB does not; scrape it
-  from inside the VPC.
+  so `/ready` works either way.
+- `/metrics` carries no auth dependency at all
+  ([api.py:117](../../src/api.py)). **Deny it at the ALB** and scrape it from
+  inside the VPC.
 
 ⚠️ **SSE versus the ALB idle timeout.** `/ask/stream`
 ([api.py:218](../../src/api.py)) holds a long-lived connection, and the agent
@@ -267,18 +339,17 @@ identity provider changes it — the blockers are in application code:
 | `qdrant_collection` is a single global setting | [config.py:34](../../src/config.py) |
 | `chunks.json` is one file holding every chunk | [retrieval.py:100-102](../../src/retrieval.py) |
 | Session memory is keyed by `session_id` only, with no tenant dimension | [memory.py:66](../../src/memory.py) |
-| `SemanticCache` is a process-global deque — and **mutually exclusive with ACLs**, see below | [cache.py:27](../../src/cache.py), [orchestrator.py:43-45](../../src/orchestrator.py) |
+| `SemanticCache` is a process-global deque, and is disabled whenever ACLs are on | [cache.py:27](../../src/cache.py), [orchestrator.py:43-45](../../src/orchestrator.py) |
 
-> **Correction to an earlier draft.** It claimed a cache hit "could serve one
-> customer's answer to another." That is **not true**: `_cache_active()` is
-> `self._cache.enabled and access is None`
-> ([orchestrator.py:43-45](../../src/orchestrator.py)), and `_access_for()`
-> returns `None` only when `enable_acl` is false
-> ([api.py:170-174](../../src/api.py)). Cached answers are never served across
-> principals. The real consequence is different and more important for
-> planning: **enabling ACLs — which §5.1 requires for cloud — disables the
-> semantic cache entirely.** Any work to share the cache across tasks is
-> therefore wasted until the cache is made ACL-aware (§9 item 7).
+On that last row: cached answers are **never** served across principals, because
+`_cache_active()` is `self._cache.enabled and access is None`
+([orchestrator.py:43-45](../../src/orchestrator.py)) and `_access_for()` returns
+`None` only when `enable_acl` is false
+([api.py:170-174](../../src/api.py)). The consequence is not a leak — it is that
+**enabling ACLs, which §5.1 requires for cloud, disables the semantic cache
+entirely.** Sharing the cache across tasks is therefore wasted work until the
+cache is made ACL-aware (§9 item 9), and ElastiCache should not be sized or
+justified for it before then.
 
 Critically, **`enable_acl` is not a tenant boundary.** It separates roles and
 sites *within* one organisation; it was never designed to isolate *between*
@@ -357,13 +428,14 @@ a control — someone will set it to fix a parsing bug.
 |---|---|---|
 | **Qdrant Cloud** | Full corpus — chunk text and vectors | On, if §2 is followed |
 | **Cloud parsing** | Whole source documents | **On** in `hybrid` whenever credentials exist |
-| Bedrock | Prompts and retrieved context | On — but in-AWS and same-region, not third-party |
+| Bedrock | Prompts and retrieved context | On — in-AWS, same region |
 | Langfuse Cloud | Prompts and answers | Off unless `LANGFUSE_*` is set |
 
-§8 discusses the last row. It was the only one an earlier draft examined, and
-it is the least sensitive of the four.
+Whether in-AWS counts as leaving the account at all is a posture question, not a
+technical one — §12 question 2 decides it, and the answer may differ for a
+defence customer.
 
-## 7. GPU, concurrency and autoscaling
+## 7. Scale, concurrency and failure behaviour
 
 ### 7.1 Do you need GPU?
 
@@ -386,21 +458,41 @@ concurrency-saturated. **Do not autoscale on CPU utilisation.**
 
 ### 7.3 Autoscaling: set a floor, don't chase the curve
 
-An earlier draft said "autoscale on ALB target response time or in-flight
-request count." Two corrections:
+Two things to get right:
 
 - ECS Application Auto Scaling's predefined ALB metric is
   `ALBRequestCountPerTarget`. **There is no predefined target-tracking metric
   for response time.** Scaling on latency needs a step-scaling or custom
   target-tracking policy against the ALB's `TargetResponseTime` CloudWatch
   metric. Don't put it in a ticket as if it were a checkbox.
-- More importantly, it collides with §11 caveat 2: at a 30–120s cold start a
-  reactive policy adds capacity *after* the burst has passed.
+- At a 30–120s cold start (§11 caveat 2) a reactive policy adds capacity *after*
+  the burst has passed.
 
 **At single-digit replica counts, over-provision a fixed desired-count for
 peak** and use scaling only to raise the floor slowly (and to scale in
 overnight). Responsive autoscaling is worth tuning only once §11's
 sparse-out-of-process change makes tasks start fast.
+
+### 7.4 Failure behaviour: readiness over-reports, and one dependency fails everything
+
+Two code-level gaps that matter more in AWS than on-prem, because Qdrant moves
+from the next container to across a NAT gateway:
+
+**`/ready` does not check its dependencies.** It returns 200 as soon as the
+retriever and orchestrator objects exist
+([api.py:102-109](../../src/api.py)) — there is no Qdrant or Redis probe. A task
+reports healthy to the ALB while Qdrant is unreachable, and the ALB sends it
+traffic. **§9 item 5.**
+
+**A Qdrant failure fails the whole query.** `hybrid_retrieve` runs sparse and
+dense under `asyncio.gather` with no `return_exceptions=True`
+([retrieval.py:213-216](../../src/retrieval.py)), so a dense-side exception
+propagates and the request fails — even though the sparse half is local, needs
+nothing over the network, and would still return citable results. Degrading to
+BM25-only turns a third-party outage into visibly weaker answers instead of
+downtime. **§9 item 4.**
+
+Both are small, independent of whether AWS happens, and worth doing on-prem too.
 
 ## 8. Observability and data residency
 
@@ -423,17 +515,22 @@ own — it is the smallest of them.
 |---|---|---|---|
 | 1 | Verified-JWT identity, ACL enablement, and claims→ACL mapping (`IDENTITY_BACKEND=oidc`) | **Security blocker.** All three parts of §5.1; any one alone is ineffective | Medium |
 | 2 | Qdrant URL + API key + TLS (`QDRANT_URL`, `QDRANT_API_KEY`) | **Prerequisite for §2's vector store.** Managed Qdrant is unaddressable today, and self-hosted runs unauthenticated (§6.2) | Small |
-| 3 | Configurable index location + S3 fetch at startup, incl. collection name from the pointer | **Prerequisite for §4.** `CHUNK_STORE_PATH` is hardcoded in two modules (§1.1) | Small |
-| 4 | Durable feedback store (S3 / DynamoDB) | `FeedbackStore` appends to a local JSONL ([feedback.py:31](../../src/feedback.py)); per-task and **lost on task restart** | Small |
-| 5 | `backup_index.py` writes to S3 | It `shutil.copy2`s into a local directory today ([backup_index.py:27-31](../../scripts/backup_index.py)); §2 claims S3 | Small |
-| 6 | `bedrock` provider | Implement the `providers/base.py` contract, and map Bedrock throttling to `LLMRetryableError` — `call_with_retries` backs off only on that type and re-raises `LLMError` terminally ([retry.py:28-34](../../src/providers/retry.py)) | Small |
-| 7 | **ACL-aware** semantic cache, *then* share it in Redis | Sharing alone is a no-op: §5.1's ACLs disable the cache (§5.3). Key by principal/role-set first | Medium |
-| 8 | Sparse index out of process | Removes `chunks.json` from the serving path → genuinely stateless tasks, no §4 skew, no per-task corpus RAM | Large |
+| 3 | Accept a verified JWT in place of `X-API-Key` for browser traffic, and remove the API-key box from the chat UI | Lands with item 1, or SSO users still paste a shared secret that lives in `localStorage` (§5.2) | Small |
+| 4 | Retrieval degradation: `return_exceptions=True` plus a BM25-only fallback | A Qdrant hiccup currently fails the whole query, though the sparse half needs no network (§7.4) | Small |
+| 5 | `/ready` probes Qdrant and Redis | Tasks currently report healthy while a critical dependency is unreachable (§7.4) | Small |
+| 6 | Durable feedback store (S3 / DynamoDB) | `FeedbackStore` appends to a local JSONL ([feedback.py:31](../../src/feedback.py)); per-task and **lost on task restart** | Small |
+| 7 | `backup_index.py` writes to S3 | It `shutil.copy2`s into a local directory today ([backup_index.py:27-31](../../scripts/backup_index.py)); §2 claims S3 | Small |
+| 8 | `bedrock` provider | Implement the `providers/base.py` contract, and map Bedrock throttling to `LLMRetryableError` — `call_with_retries` backs off only on that type and re-raises `LLMError` terminally ([retry.py:28-34](../../src/providers/retry.py)) | Small |
+| 9 | **ACL-aware** semantic cache, *then* share it in Redis | Sharing alone is a no-op: §5.1's ACLs disable the cache (§5.3). Key by principal/role-set first | Medium |
+| 10 | Sparse index out of process | Removes `chunks.json` from the serving path → genuinely stateless tasks, no §4 skew, no per-task corpus RAM | Large |
 
-Items 1–3 gate any public deployment. Items 4–6 are small and mutually
-independent. Item 7 replaces an earlier "shared semantic cache" item that would
-have been wasted work in combination with item 1. Item 8 is the strategic
+Items 1–3 gate any public deployment and ship together. Items 4–5 are small,
+raise availability, and apply on-prem as well. Items 6–8 are independent of each
+other. Item 9 must precede any work on a shared cache. Item 10 is the strategic
 option in §11.
+
+The index fetch is deliberately absent: it needs a container entrypoint, not
+application code (§4.3).
 
 ## 10. Cost shape (directional — verify current pricing)
 
@@ -445,13 +542,16 @@ option in §11.
   over-provisioning advice means paying for peak capacity most of the time.
 - **Qdrant Cloud** vs. self-hosted: managed costs more per month but removes HA,
   snapshot and upgrade work that is otherwise unbudgeted engineering time.
+- **Ingestion republishes** are a real line item under §4.1's blue/green: each
+  index version writes the whole collection again. Price it per publish against
+  your ingest cadence before choosing between blue/green and snapshot-and-delta.
 - **NAT and cross-account egress** is easy to forget: every Qdrant Cloud query
   and every cloud-parse upload is NAT-processed data. The VPC endpoints in §6.1
   remove the S3/Bedrock/Secrets share; the Qdrant Cloud share you cannot remove
   without self-hosting.
-- **ElastiCache** has a floor cost. If Redis exists *only* for rate limiting and
-  session memory, DynamoDB with TTL is cheaper — at the price of writing new
-  backends. (It is no longer justified by the semantic cache, per §5.3.)
+- **ElastiCache** has a floor cost. It serves rate limiting and session memory
+  only until §9 item 9 lands; if that is all it ever does, DynamoDB with TTL is
+  cheaper, at the price of writing new backends.
 
 ## 11. Caveats, and the better long-term approach
 
@@ -482,8 +582,8 @@ option in §11.
    of work, not a config change.
 5. **This document is architecture, not a deployable plan.** §6.1 names the
    subnet shape, endpoints and WAF you need; it does not specify security-group
-   rules, and there is **no Terraform/CDK anywhere in this repo**. Someone has
-   to own that before a build date means anything.
+   rules or IAM policies, and there is **no Terraform/CDK anywhere in this
+   repo**. Someone has to own that before a build date means anything.
 
 **The better long-term approach — move sparse retrieval into Qdrant.**
 
@@ -501,15 +601,15 @@ autoscaling work properly.
 
 ⚠️ **But this cannot be a cloud-only change.** §1 requires retrieval logic to be
 identical in both environments, precisely so a quality regression reproduces in
-both and the RAGAS gates stay meaningful. Replacing `rank_bm25` with Qdrant's
-sparse vectors changes ranking, so doing it for AWS alone would make the two
-deployments answer differently and quietly void the shared golden set. An
-earlier draft called this "for cloud specifically" — that framing contradicted
-§1. Scope it as a change to **both** environments, including:
+both and the RAGAS gates stay meaningful. Moving sparse retrieval into Qdrant
+changes ranking, so doing it for AWS alone would make the two deployments answer
+differently and quietly void the shared golden set. Scope it as a change to
+**both** environments, including:
 
 - an on-prem re-ingest, since both must produce sparse vectors at ingest time,
-- IDF handling, because Qdrant sparse scoring needs corpus statistics that
-  `rank_bm25` computes for you,
+- a scoring review: Qdrant's sparse scoring is not `BM25Okapi`'s formula. IDF
+  weighting is available, but the k1/b length saturation that `rank_bm25`
+  applies is not the same function, so retrieved sets will shift.
 - **re-baselining the RAGAS thresholds**, because the scores will move.
 
 Scoped honestly it is still the highest-leverage item in this document — it
@@ -522,36 +622,58 @@ blue/green machinery, not after.
 1. **Will this AWS deployment ever serve more than one customer?** If so, the
    per-tenant isolation work in §5.3 is a **prerequisite, not an enhancement**.
 2. **What is the data-classification ruling on each of §6.4's four egress
-   paths?** Not just tracing: Qdrant Cloud takes the corpus, and `hybrid`
-   parsing takes whole documents.
+   paths?** Not just tracing: Qdrant Cloud takes the corpus, `hybrid` parsing
+   takes whole documents, and whether in-AWS Bedrock counts as egress at all is
+   part of the same ruling.
 3. Expected QPS and corpus size at 12 months? (Decides GPU §7.1, task sizing
    §3.1, and whether §11's sparse migration is required rather than optional.)
 4. Is Cognito the intended IdP, or an existing corporate OIDC/SAML provider? And
-   which machine callers need the second listener rule in §5.2?
+   which machine callers need the separate hostname in §5.2?
 5. Is Bedrock model access already enabled in the target account and region?
-6. Who owns the IaC, and does any exist for on-prem today? (§11 caveat 5)
+6. Who owns the IaC and the IAM policy set, and does any exist for on-prem
+   today? (§11 caveat 5)
 7. Must access revocation be immediate? If yes, §5.4 makes it a design change.
+8. What is the ingest cadence? It decides blue/green versus snapshot-and-delta
+   in §4.1 and the republish cost in §10.
 
 > *Resolved:* on-prem Kubernetes is **not** planned — on-prem is Docker Compose,
 > for both single-site multi-user and per-customer redeployment. See §3.
 
 ## Review log
 
-**2026-10-30 — reviewed against the codebase.** Corrected: the `PARSE_BACKEND`
-seam and its residency consequence (§1, §6.3, §6.4); the unaddressability of
-managed Qdrant and the absence of any Qdrant authentication (§2, §6.2, §9 item
-2); the claim that the semantic cache leaks across customers, which it does not,
-and the shared-cache work item it implied (§5.3, §9 item 7); the claim that
-version pinning bounds skew to a brief window, which it does not (§4.1); the
-single-artifact versioning, which omitted `acl.json` and two paid caches (§4.2);
-the attribution of multi-tenancy tracking to a non-existent "gap register"
-(§5.3); the "S3 target for `backup_index.py`", which writes locally (§9 item 5);
-the autoscaling metric advice (§7.3); and the framing of the sparse migration as
-cloud-specific, which contradicted §1 (§11).
+Claims in this document have been checked against the codebase on the dates
+below. Corrections are recorded here rather than in the body, so the body reads
+as the current design.
 
-Added: §1.1 missing seams, §3.1 task sizing, §5.2 machine traffic and the
-SSE/idle-timeout hazard, §5.4 revocation latency, §6 networking and egress, and
-§11 caveat 5 on the absence of IaC.
+**2026-10-30, first pass.** Corrected: the `PARSE_BACKEND` seam, which defaults
+to `hybrid` and escalates documents to a third-party parser, and its residency
+consequence (§1, §6.3, §6.4); the assumption that managed Qdrant was reachable,
+and the absence of any Qdrant authentication (§2, §6.2); a claim that the
+semantic cache could leak across customers — it cannot, and the real consequence
+is that ACLs disable it (§5.3); a claim that version pinning bounded skew to a
+brief window — it does not (§4.1); versioning of `chunks.json` alone, which
+omitted `acl.json` and two paid caches (§4.2); attribution of multi-tenancy
+tracking to a non-existent "gap register" (§5.3); a claim that `backup_index.py`
+targeted S3, which writes locally (§9 item 7); the autoscaling metric advice
+(§7.3); and the framing of the sparse migration as cloud-specific, which
+contradicted §1 (§11). Added: §1.1 missing seams, §3.1 task sizing, §5.2
+machine traffic and the SSE/idle-timeout hazard, §5.4 revocation latency, §6
+networking and egress, and §11 caveat 5.
+
+**2026-10-30, second pass.** Corrected: the index fetch, previously listed as a
+code change gating deployment — it needs only a container entrypoint, since
+`Retriever()` takes the default path and `.dockerignore` already omits the index
+(§4.3); the two-listener-rule plan in §5.2, which assumed the UI and machine
+callers could be split by path when they share paths and every endpoint already
+requires an API key (§5.2, §9 item 3); and the claim that Qdrant sparse search
+lacks the corpus statistics `rank_bm25` provides — IDF weighting is available,
+and the real risk is a different scoring formula (§11). Added: the republish cost
+of blue/green and its conflict with incremental ingestion (§4.1, §10, §12 q8);
+§7.4 on readiness over-reporting and the absence of retrieval degradation (§9
+items 4–5); the unauthenticated `/metrics` endpoint (§2, §5.2); a measurement
+procedure for task sizing (§3.1); and neutral wording on whether in-AWS traffic
+counts as egress (§6.4). Removed the draft-to-draft commentary that the first
+pass left in the body.
 
 ---
 
