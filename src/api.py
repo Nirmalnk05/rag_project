@@ -34,6 +34,7 @@ async def lifespan(app: FastAPI):
     setup_logging()
     settings = get_settings()
     settings.validate_provider()
+    settings.validate_access()
     log_event(_logger, "startup_loading_retriever")
     from src.retrieval import Retriever
     app.state.retriever = await asyncio.to_thread(Retriever)

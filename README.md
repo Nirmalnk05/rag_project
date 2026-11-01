@@ -201,9 +201,23 @@ is filtered by the request principal (`X-User-Id` / `X-Roles` / `X-Sites` header
 map your real SSO to these) against per-document ACLs. Documents are tagged in
 `data/acl.json` (`{"restricted.pdf": {"roles": ["eng"], "sites": ["siteA"]}}`);
 unlisted docs are public. A chunk is visible only if the principal satisfies every
-ACL dimension it restricts. Enforced in both BM25 and dense retrieval and in the
-agent's `search`/`get_document_section`/`list_documents` tools, so a user never
-sees — or gets an answer grounded in — documents they aren't cleared for.
+ACL dimension it restricts. Dense retrieval pushes the ACL into the Qdrant query
+filter (on indexed `metadata.acl_roles` / `metadata.acl_sites` payload fields) so
+`top_k` is filled with *permitted* neighbours rather than truncated and then
+filtered, and `hybrid_retrieve` re-checks every result at its boundary — which
+gates the API response's `retrieval` field as well as the LLM context. Also
+enforced in BM25 and in the agent's `search`/`get_document_section`/
+`list_documents` tools, so a user never sees — or gets an answer grounded in —
+documents they aren't cleared for.
+
+The headers are caller-supplied, so `ENABLE_ACL=true` additionally requires
+`TRUST_IDENTITY_HEADERS=true`, which asserts that a gateway authenticates the
+user and rebuilds them from verified claims; without one, `X-Roles: admin` is a
+full bypass. Startup also refuses a `data/acl.json` while `ENABLE_ACL` is false,
+since the ACLs would be silently inert. Editing `data/acl.json` and re-running
+`scripts/ingest.py` re-upserts the affected chunks: the ingest manifest is keyed
+on content *plus* ACL/version metadata, so an ACL-only change still reaches the
+Qdrant payload.
 
 **CMMS / system-of-record tool.** With `ENABLE_CMMS=true`, the agent gets a
 `query_cmms` tool for live asset status and open work orders — the data that lives

@@ -63,7 +63,9 @@ def _version_for(source_file: str, versions_map: dict) -> dict:
     }
 
 __all__ = ["Chunk", "build_chunks", "run_ingestion", "_split_into_sections",
-           "_windowed_chunks", "chunk_content_hash", "diff_manifest", "point_id_for"]
+           "_windowed_chunks", "chunk_content_hash", "chunk_index_hash",
+           "diff_manifest", "point_id_for", "ensure_payload_indexes",
+           "ACL_INDEXED_KEYS"]
 
 
 # ---------- data model ----------
@@ -153,7 +155,61 @@ def _hash_id(*parts: str) -> str:
 
 
 def chunk_content_hash(doc_title: str, section: str, raw_text: str) -> str:
+    """Content identity. Also the contextual-augmentation cache key, so it must
+    NOT cover ACL/version metadata — an ACL edit would re-run every LLM call."""
     return hashlib.sha256(f"{doc_title}||{section}||{raw_text}".encode()).hexdigest()
+
+
+# Metadata that changes what the *index* must contain, as opposed to chunk
+# content. These belong in the manifest hash: without them, populating
+# data/acl.json leaves every content hash unchanged, so to_upsert is empty and
+# the new ACL reaches chunks.json (rewritten wholesale) but never the Qdrant
+# payload — sparse then enforces ACLs while dense serves restricted chunks.
+INDEX_META_KEYS = ("acl_roles", "acl_sites", "doc_status", "doc_version", "doc_date")
+
+
+def chunk_index_hash(chunk: "Chunk") -> str:
+    """Manifest hash: chunk content plus the metadata retrieval filters on."""
+    meta = chunk.metadata or {}
+    parts = [chunk_content_hash(chunk.doc_title, chunk.section, chunk.text)]
+    for k in INDEX_META_KEYS:
+        v = meta.get(k)
+        if isinstance(v, list):
+            v = sorted(str(x) for x in v)   # membership, not order, is what matters
+        parts.append(f"{k}={v!r}")
+    return hashlib.sha256("||".join(parts).encode()).hexdigest()
+
+
+# Payload paths the retrieval filters read, with the schema Qdrant should index.
+# Filtered HNSW over an unindexed payload field degrades badly as the collection
+# grows, so these are part of the ACL change, not an optimisation after it.
+ACL_INDEXED_KEYS: dict[str, str] = {
+    "metadata.acl_roles": "keyword",
+    "metadata.acl_sites": "keyword",
+    "metadata.source_file": "keyword",
+    "metadata.element_type": "keyword",
+    "metadata.page": "integer",
+    "doc_title": "keyword",
+    "section": "keyword",
+}
+
+
+def ensure_payload_indexes(client, collection_name: str) -> None:
+    """Create the payload indexes, idempotently, on every ingest.
+
+    Deliberately not inside the `create_collection` branch: a collection built
+    before these existed would otherwise never acquire them. Qdrant errors when
+    an index is already present, which is the normal case and not a failure.
+    """
+    from qdrant_client.models import PayloadSchemaType
+    for field_name, schema in ACL_INDEXED_KEYS.items():
+        try:
+            client.create_payload_index(
+                collection_name=collection_name, field_name=field_name,
+                field_schema=PayloadSchemaType(schema),
+            )
+        except Exception as e:  # noqa: BLE001 — "already exists" is expected
+            print(f"  payload index {field_name}: {e}")
 
 
 def point_id_for(chunk_id: str) -> str:
@@ -245,6 +301,7 @@ def index_qdrant_incremental(chunks: list[Chunk], embedder, *,
             collection_name=_settings.qdrant_collection,
             vectors_config=VectorParams(size=dim, distance=Distance.COSINE),
         )
+    ensure_payload_indexes(client, _settings.qdrant_collection)
 
     if stale_ids:
         client.delete(
@@ -286,9 +343,7 @@ def run_ingestion(docs_dir: Path = Path("data/docs"), use_contextual: bool = Tru
 
     chunks = build_chunks(docs_dir, use_contextual=use_contextual,
                           context_cache=context_cache, force_cloud=force_cloud)
-    current_manifest = {
-        c.id: chunk_content_hash(c.doc_title, c.section, c.text) for c in chunks
-    }
+    current_manifest = {c.id: chunk_index_hash(c) for c in chunks}
     new, changed, stale = diff_manifest(current_manifest, previous_manifest)
     to_upsert = new | changed if not rebuild else set(current_manifest)
     print(f"[ingest] {len(chunks)} chunks total — new={len(new)} changed={len(changed)} stale={len(stale)}")

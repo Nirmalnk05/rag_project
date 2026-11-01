@@ -19,16 +19,27 @@ spec:
           envFrom:
             - configMapRef: { name: rag-config }
             - secretRef: { name: rag-secrets }
-          # Liveness = process up; readiness = models + orchestrator loaded.
+          # The Retriever is built in the FastAPI lifespan hook, so uvicorn
+          # accepts NO connections until chunks.json is loaded and the BM25
+          # index is built — measured at ~90s for 100k chunks. Liveness alone
+          # (initialDelay 10 + 3x15s) kills the container at ~55s: crash loop.
+          # startupProbe suspends liveness AND readiness until it succeeds.
+          startupProbe:
+            httpGet: { path: /health, port: 8000 }
+            periodSeconds: 10
+            failureThreshold: 30     # 300s budget; raise with corpus size
           livenessProbe:
             httpGet: { path: /health, port: 8000 }
-            initialDelaySeconds: 10
             periodSeconds: 15
           readinessProbe:
             httpGet: { path: /ready, port: 8000 }
-            initialDelaySeconds: 20
             periodSeconds: 10
-            failureThreshold: 6      # allow time for model load on cold start
+            failureThreshold: 3
+          # Measured at 100k chunks: ~1.8Gi retrieval state (chunk store +
+          # BM25) plus ~1.1Gi reranker, ~130Mi embedder and the torch runtime —
+          # roughly 3.5-4Gi, i.e. at this limit. Re-measure before raising the
+          # corpus, and do not autoscale on CPU (see aws.md 7.2: the embed and
+          # rerank locks make a saturated pod look CPU-idle).
           resources:
             requests: { cpu: "1", memory: "2Gi" }
             limits: { cpu: "2", memory: "4Gi" }

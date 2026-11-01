@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 VALID_PROVIDERS = {"anthropic", "ollama", "openai_compatible"}
@@ -68,6 +70,11 @@ class Settings(BaseSettings):
 
     # Access control (per-user retrieval ACLs)
     enable_acl: bool = False               # off = every chunk visible (dev default)
+    # X-User-Id / X-Roles / X-Sites are caller-supplied: with ENABLE_ACL on and
+    # nothing in front of the app, `X-Roles: admin` is a full ACL bypass. Set
+    # this only when a gateway strips and reconstructs those headers from a
+    # verified identity (OIDC/LDAP). validate_access() refuses to start without it.
+    trust_identity_headers: bool = False
 
     # Document freshness / versioning
     retrieve_superseded: bool = False      # False = superseded revisions are hidden
@@ -150,6 +157,28 @@ class Settings(BaseSettings):
             raise ValueError(
                 "RATE_LIMIT_BACKEND=redis requires REDIS_URL. "
                 "Set it, or use RATE_LIMIT_BACKEND=memory (single-instance)."
+            )
+
+    def validate_access(self, acl_path: Path | None = None) -> None:
+        """Fail closed on the two ways ACLs silently become no-ops.
+
+        A deliberately public deployment may run with ACLs off; one that ships
+        an ACL sidecar may not, because `_access_for` then returns None and
+        `acl_visible` short-circuits to visible for every chunk.
+        """
+        path = Path("data/acl.json") if acl_path is None else Path(acl_path)
+        if path.exists() and not self.enable_acl:
+            raise ValueError(
+                f"{path} defines document ACLs but ENABLE_ACL is false, so every "
+                "chunk is served to every caller. Set ENABLE_ACL=true, or remove "
+                "the sidecar if this deployment is intentionally public."
+            )
+        if self.enable_acl and not self.trust_identity_headers:
+            raise ValueError(
+                "ENABLE_ACL=true requires TRUST_IDENTITY_HEADERS=true, which "
+                "asserts that a gateway authenticates the user and rebuilds "
+                "X-User-Id / X-Roles / X-Sites from verified claims. Without one, "
+                "any caller can send 'X-Roles: admin' and read every document."
             )
 
 

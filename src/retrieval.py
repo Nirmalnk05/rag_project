@@ -1,16 +1,20 @@
 """Hybrid retrieval: BM25 + dense (Qdrant), RRF fusion, cross-encoder rerank.
 
 data/chunks.json is the single source of truth; the BM25 index is rebuilt
-in memory at startup (fine to ~100k chunks — beyond that, move sparse
-search to OpenSearch/Qdrant sparse vectors).
+in memory at startup. Measured on a synthetic corpus, 100k chunks costs ~1.8 GB
+of process RAM (chunk store + BM25 doc_freqs), ~90s of startup inside the
+FastAPI lifespan hook, and 300-730ms per sparse_search — so treat ~50k as the
+practical ceiling for this shape and move sparse search to Qdrant sparse vectors
+(or OpenSearch) beyond it.
 """
 from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -18,10 +22,15 @@ from rank_bm25 import BM25Okapi
 
 from src.config import get_settings
 
+_logger = logging.getLogger("rag.retrieval")
+
 CHUNK_STORE_PATH = Path("data/chunks.json")
 ALLOWED_FILTER_KEYS = {"source_file", "doc_title", "section", "element_type", "page"}
 # keys that live under chunk["metadata"] rather than at the top level
 METADATA_FILTER_KEYS = {"source_file", "element_type", "page"}
+# payload paths the ACL filter reads; must match what ingestion writes
+ACL_ROLES_KEY = "metadata.acl_roles"
+ACL_SITES_KEY = "metadata.acl_sites"
 
 
 @dataclass
@@ -34,6 +43,10 @@ class Retrieved:
     context: str
     score: float
     source: str  # 'bm25' | 'dense' | 'rrf' | 'rerank'
+    # Chunk metadata, carried so the boundary check in hybrid_retrieve can
+    # re-authorize. Deliberately absent from to_dict(): that feeds the API
+    # response and the LLM context, neither of which should see ACL labels.
+    metadata: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -76,7 +89,7 @@ def _from_chunk(c: dict, score: float, source: str) -> Retrieved:
     return Retrieved(
         chunk_id=c["id"], doc_id=c["doc_id"], doc_title=c["doc_title"],
         section=c.get("section", ""), text=c["text"], context=c.get("context", ""),
-        score=score, source=source,
+        score=score, source=source, metadata=c.get("metadata", {}),
     )
 
 
@@ -84,8 +97,37 @@ def _clone(r: Retrieved, *, score: float, source: str) -> Retrieved:
     return Retrieved(
         chunk_id=r.chunk_id, doc_id=r.doc_id, doc_title=r.doc_title,
         section=r.section, text=r.text, context=r.context,
-        score=score, source=source,
+        score=score, source=source, metadata=r.metadata,
     )
+
+
+def _acl_dimension(key: str, granted: frozenset[str]):
+    """One ACL dimension: the chunk does not restrict it, OR the principal matches.
+
+    Mirrors `acl_visible`'s per-dimension rule. `IsEmpty` covers a missing key,
+    null, and an empty list — `_acl_for` omits the key entirely for public
+    chunks, so the missing-key case is the common one.
+    """
+    from qdrant_client.models import (FieldCondition, Filter, IsEmptyCondition,
+                                      MatchAny, PayloadField)
+    should = [IsEmptyCondition(is_empty=PayloadField(key=key))]
+    if granted:
+        should.append(FieldCondition(key=key, match=MatchAny(any=sorted(granted))))
+    return Filter(should=should)
+
+
+def acl_filter(access=None):
+    """Translate an AccessContext into a Qdrant filter, or None if unrestricted.
+
+    Both dimensions are ANDed, each as its own should-group. Dropping either
+    group fails *open*, so the differential test in tests/test_acl_enforcement.py
+    checks this against `acl_visible` for every role/site combination.
+    """
+    if access is None or access.is_admin:
+        return None
+    from qdrant_client.models import Filter
+    return Filter(must=[_acl_dimension(ACL_ROLES_KEY, access.roles),
+                        _acl_dimension(ACL_SITES_KEY, access.sites)])
 
 
 class Retriever:
@@ -133,13 +175,21 @@ class Retriever:
         with self._embed_lock:
             vec = self._embedder.encode(query, normalize_embeddings=True).tolist()
 
-        qfilter = None
+        # ACL goes into the query filter so top_k is filled with *permitted*
+        # neighbours. Post-filtering here would truncate first and collapse
+        # recall: 20 nearest, 15 inaccessible, 5 candidates left to rerank.
+        conds = []
         if filters:
-            from qdrant_client.models import FieldCondition, Filter, MatchValue
-            conds = []
+            from qdrant_client.models import FieldCondition, MatchValue
             for k, v in filters.items():
                 key = f"metadata.{k}" if k in METADATA_FILTER_KEYS else k
                 conds.append(FieldCondition(key=key, match=MatchValue(value=v)))
+        aclf = acl_filter(access)
+        if aclf is not None:
+            conds.append(aclf)
+        qfilter = None
+        if conds:
+            from qdrant_client.models import Filter
             qfilter = Filter(must=conds)
 
         res = self._qdrant.query_points(
@@ -150,13 +200,15 @@ class Retriever:
         for h in res.points:
             p = h.payload or {}
             meta = p.get("metadata", {})
+            # Kept as defence in depth: an index written before ACLs were
+            # populated has no acl_* payload, so the filter above cannot gate it.
             if not acl_visible(meta, access) or not _fresh(meta, s.retrieve_superseded):
                 continue
             out.append(Retrieved(
                 chunk_id=p.get("id", ""), doc_id=p.get("doc_id", ""),
                 doc_title=p.get("doc_title", ""), section=p.get("section", ""),
                 text=p.get("text", ""), context=p.get("context", ""),
-                score=float(h.score), source="dense",
+                score=float(h.score), source="dense", metadata=meta,
             ))
         return out
 
@@ -206,6 +258,22 @@ class Retriever:
 
     # ---------- public ----------
 
+    def _authorized(self, results: list[Retrieved], access) -> list[Retrieved]:
+        """Final authorization gate for everything leaving the retrieval layer.
+
+        Independent of the per-search checks on purpose: this is the one place
+        every caller passes through, so a bug in filter translation, a stale
+        Qdrant payload, or a future code path cannot leak a chunk into the LLM
+        context *or* into the API response's `retrieval` field.
+        """
+        from src.access import acl_visible
+        ok = [r for r in results if acl_visible(r.metadata, access)]
+        if len(ok) != len(results):
+            from src.observability import log_event
+            log_event(_logger, "acl_boundary_removed_chunks",
+                      removed=len(results) - len(ok), returned=len(ok))
+        return ok
+
     async def hybrid_retrieve(self, query: str, filters: dict | None = None,
                               access=None) -> list[Retrieved]:
         """sparse ∥ dense → RRF → rerank → top_k. Sparse+dense run in parallel.
@@ -217,4 +285,5 @@ class Retriever:
         )
         fused = self.reciprocal_rank_fusion([sparse, dense])
         head = fused[: max(s.top_k_sparse, s.top_k_dense)]
-        return await asyncio.to_thread(self.rerank, query, head, s.top_k_rerank)
+        ranked = await asyncio.to_thread(self.rerank, query, head, s.top_k_rerank)
+        return self._authorized(ranked, access)
