@@ -5,7 +5,9 @@ from src.parsing.model import FigureElement, ParsedDocument, TableElement, TextE
 
 def test_element_units_text_is_windowed():
     long_text = " ".join(f"w{i}" for i in range(1500))
-    units = _element_units(TextElement("s", long_text))
+    units = _element_units(TextElement("s", long_text), max_tokens=600,
+                           overlap_tokens=100,
+                           count_tokens=lambda t: len(t.split()))
     assert len(units) == 3 and all(u[1] == "text" for u in units)
 
 

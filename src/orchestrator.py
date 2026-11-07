@@ -13,7 +13,7 @@ from typing import AsyncIterator
 _logger = logging.getLogger("rag.eval")
 
 from src.agent.loop import run_agent, stream_agent
-from src.cache import get_cache
+from src.cache import cache_scope, get_cache
 from src.config import get_settings
 from src.faithfulness import check_faithfulness
 from src.graph import build_state_graph, run_graph, stream_answer
@@ -40,25 +40,31 @@ class Orchestrator:
         self._store = store if store is not None else get_store(self._s)
         self._cache = cache if cache is not None else get_cache(self._s)
 
-    def _cache_active(self, access) -> bool:
-        # never serve cached answers across principals when ACLs are enforced
-        return self._cache.enabled and access is None
+    def _scope(self, access) -> str:
+        """Partition key: what this principal can see, at this index generation.
+
+        Read per request rather than cached: an ingest claims its generation
+        before it touches Qdrant, so every scope is invalidated the moment the
+        documents behind the cached answers start changing.
+        """
+        from src.ingestion import index_generation
+        return cache_scope(access, index_generation())
 
     async def _cache_lookup(self, query: str, access):
-        if not self._cache_active(access):
+        if not self._cache.enabled:
             return None
         try:
             vec = await asyncio.to_thread(self._r.embed_query, query)
         except Exception:
             return None
-        return self._cache.get(vec)
+        return self._cache.get(vec, scope=self._scope(access))
 
     async def _cache_store(self, query: str, entry: dict, access) -> None:
-        if not self._cache_active(access):
+        if not self._cache.enabled:
             return
         try:
             vec = await asyncio.to_thread(self._r.embed_query, query)
-            self._cache.put(vec, entry)
+            self._cache.put(vec, entry, scope=self._scope(access))
         except Exception:
             pass
 

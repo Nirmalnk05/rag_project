@@ -3,6 +3,10 @@
 The registry exposes provider-neutral ToolSpecs and executes tool calls. It keeps
 a running list of retrieved sources across calls so `[#n]` citations in the final
 answer map to real chunks (fed to verify_citations).
+
+`search` goes through hybrid_retrieve and inherits every retrieval gate. The
+direct-fetch tools read the chunk store by name and inherit nothing, so they
+run the same checks themselves — see `ToolRegistry._visible`.
 """
 from __future__ import annotations
 
@@ -140,10 +144,7 @@ class ToolRegistry:
         if not query.strip():
             return "Error: empty query."
         results = await self._r.hybrid_retrieve(query, filters or None, self._access)
-        dicts = [r.to_dict() for r in results]
-        clean, flagged = screen_chunks(dicts)
-        if flagged:
-            log_event(_logger, "chunk_flagged_in_tool", count=len(flagged))
+        clean = self._screened([r.to_dict() for r in results])
         top_k = _coerce_top_k(top_k)
         if top_k:
             clean = clean[:top_k]
@@ -151,24 +152,60 @@ class ToolRegistry:
             return "No results found."
         return self._format_and_record(clean)
 
-    def _get_section(self, source_file: str, section: str) -> str:
+    def _visible(self, chunks: list[dict]) -> list[dict]:
+        """Every gate a direct read of the chunk store would otherwise skip:
+        ACL, freshness, and live metadata while this process is behind the index.
+
+        Content screening is NOT here: it belongs to the paths that return chunk
+        text, and a flagged chunk has to be distinguishable from a missing one.
+        """
         from src.access import acl_visible
-        matched = [c for c in self._chunks()
-                   if c.get("metadata", {}).get("source_file") == source_file
-                   and c.get("section") == section
-                   and acl_visible(c.get("metadata", {}), self._access)]
+        from src.retrieval import is_fresh
+
+        live: dict[str, dict] = {}
+        moved = getattr(self._r, "index_has_moved", None)
+        if callable(moved) and moved():
+            live = self._r.live_metadata([c.get("id", "") for c in chunks])
+            # the snapshot's labels are not authoritative while it is behind:
+            # a chunk the index no longer holds is dropped, not served
+            chunks = [c for c in chunks if c.get("id") in live]
+
+        out = []
+        for c in chunks:
+            meta = live.get(c.get("id", ""), c.get("metadata", {}))
+            if not acl_visible(meta, self._access):
+                continue
+            if not is_fresh(meta, self._s.retrieve_superseded):
+                continue
+            out.append(c)
+        return out
+
+    def _screened(self, chunks: list[dict]) -> list[dict]:
+        clean, flagged = screen_chunks(chunks)
+        if flagged:
+            log_event(_logger, "chunk_flagged_in_tool", count=len(flagged))
+        return clean
+
+    def _get_section(self, source_file: str, section: str) -> str:
+        matched = self._visible([c for c in self._chunks()
+                                 if c.get("metadata", {}).get("source_file") == source_file
+                                 and c.get("section") == section])
         if not matched:
             return f"No section '{section}' found in {source_file}."
-        return self._format_and_record(matched)
+        clean = self._screened(matched)
+        if not clean:
+            # "not found" would send the agent hunting for another name
+            return (f"Section '{section}' in {source_file} was withheld: its "
+                    "content was flagged by prompt-injection screening.")
+        return self._format_and_record(clean)
 
     def _list_documents(self) -> str:
-        from src.access import acl_visible
         seen = {}
-        for c in self._chunks():
-            if not acl_visible(c.get("metadata", {}), self._access):
-                continue
+        for c in self._visible(self._chunks()):
             sf = c.get("metadata", {}).get("source_file", "?")
             seen[sf] = c.get("doc_title", "?")
+        if not seen:
+            return "No documents are available to you."
         return "\n".join(f"- {title} ({sf})" for sf, title in sorted(seen.items()))
 
     def _query_cmms(self, asset_id: str) -> str:

@@ -12,3 +12,11 @@ data:
   RATE_LIMIT_BACKEND: "redis"
   REDIS_URL: "redis://redis:6379/0"
   RATE_LIMIT_RPM: "60"
+  # Every replica loads chunks.json at startup and re-reads index_meta.json on
+  # this interval, so a fresh ingest reaches all of them without a rollout.
+  INDEX_RELOAD_POLL_S: "60"
+  # ENABLE_ACL=true also requires TRUST_IDENTITY_HEADERS=true, which asserts a
+  # gateway rebuilt X-User-Id / X-Roles / X-Sites from verified claims. Apply
+  # networkpolicy.yaml first: it is what keeps anything else off port 8000.
+  # ENABLE_ACL: "true"
+  # TRUST_IDENTITY_HEADERS: "true"

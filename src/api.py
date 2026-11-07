@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import AsyncIterator
 
@@ -29,6 +29,22 @@ _logger = logging.getLogger("rag.api")
 _STATIC_DIR = Path(__file__).parent / "static"
 
 
+async def _index_reload_loop(retriever, poll_s: int) -> None:
+    """Poll index_meta.json and swap in a newer corpus off the request path.
+
+    chunks.json is a startup snapshot, so until this runs NEW documents are
+    invisible to keyword search. Revocations and deletions do not wait for it:
+    while the loaded generation is behind, the sparse leg resolves metadata
+    from the index itself.
+    """
+    while True:
+        await asyncio.sleep(poll_s)
+        try:
+            await asyncio.to_thread(retriever.reload_if_stale)
+        except Exception:  # noqa: BLE001 — a failed reload must not stop serving
+            _logger.warning("index_reload_failed", exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     setup_logging()
@@ -39,9 +55,20 @@ async def lifespan(app: FastAPI):
     from src.retrieval import Retriever
     app.state.retriever = await asyncio.to_thread(Retriever)
     app.state.orchestrator = Orchestrator(app.state.retriever, settings=settings)
+    app.state.index_reload_task = None
+    if settings.index_reload_poll_s > 0:
+        app.state.index_reload_task = asyncio.create_task(
+            _index_reload_loop(app.state.retriever, settings.index_reload_poll_s))
     log_event(_logger, "startup_ready", provider=settings.llm_provider,
               mode=settings.agent_mode)
-    yield
+    try:
+        yield
+    finally:
+        task = app.state.index_reload_task
+        if task is not None:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
 
 
 app = FastAPI(title="Production RAG", version="0.2.0", lifespan=lifespan)

@@ -12,8 +12,11 @@ def test_split_into_sections():
 
 
 def test_windowed_chunks_overlap():
+    """Windows are bounded in tokens now; one token per word here keeps the
+    arithmetic readable (and keeps the suite off the real tokenizer)."""
     words = " ".join(f"w{i}" for i in range(1500))
-    out = _windowed_chunks(words, target=600, overlap=100)
+    out = _windowed_chunks(words, max_tokens=600, overlap_tokens=100,
+                           count_tokens=lambda t: len(t.split()))
     assert len(out) == 3
     assert out[0].split()[-100:] == out[1].split()[:100]  # overlap preserved
 

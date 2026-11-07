@@ -11,7 +11,9 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+import re
 from dataclasses import asdict, dataclass, field
+from functools import lru_cache
 from pathlib import Path
 
 from src.config import get_settings
@@ -24,19 +26,66 @@ _settings = get_settings()
 CHUNK_STORE_PATH = Path("data/chunks.json")
 MANIFEST_PATH = Path("data/ingest_manifest.json")
 CONTEXT_CACHE_PATH = Path("data/context_cache.json")
-INDEX_META_PATH = Path("data/index_meta.json")   # {embed_model: ...}
+INDEX_META_PATH = Path("data/index_meta.json")
+# {embed_model, generation, committed_generation} — see index_generation()
 
 
-def embed_model_changed(current_model: str, meta_path: Path = INDEX_META_PATH) -> bool:
+def _meta_path(meta_path: Path | str | None) -> Path:
+    """Resolve the meta path at CALL time.
+
+    A `meta_path: Path = INDEX_META_PATH` default binds the module constant
+    as it was at import time, so redirecting INDEX_META_PATH leaves readers
+    pointing at the original file while writers follow the new one.
+    """
+    return INDEX_META_PATH if meta_path is None else Path(meta_path)
+
+
+def embed_model_changed(current_model: str, meta_path: Path | None = None) -> bool:
     """True if the index was built with a different embedding model (needs re-embed)."""
-    if not meta_path.exists():
-        return False
-    try:
-        with meta_path.open("r", encoding="utf-8") as f:
-            prev = json.load(f).get("embed_model", "")
-    except (json.JSONDecodeError, OSError):
-        return False
+    prev = _read_index_meta(meta_path).get("embed_model", "")
     return bool(prev) and prev != current_model
+
+
+def _read_index_meta(meta_path: Path | None = None) -> dict:
+    """index_meta.json, or {} when it is missing, unreadable or half-written."""
+    try:
+        with _meta_path(meta_path).open("r", encoding="utf-8") as f:
+            meta = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return meta if isinstance(meta, dict) else {}
+
+
+def _meta_int(meta_path: Path | None, key: str) -> int:
+    try:
+        return int(_read_index_meta(meta_path).get(key, 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def index_generation(meta_path: Path | None = None) -> int:
+    """The generation ingestion has *claimed*.
+
+    Bumped before Qdrant is touched, so a serving process can tell that the
+    index has moved past the chunks.json snapshot it loaded at startup.
+    """
+    return _meta_int(meta_path, "generation")
+
+
+def committed_generation(meta_path: Path | None = None) -> int:
+    """The generation chunks.json and the sidecars are known to match.
+
+    While an ingest is in flight this trails `index_generation`, which is what
+    stops a reloading process from rebuilding BM25 off a half-written snapshot
+    and then claiming the new generation.
+    """
+    return _meta_int(meta_path, "committed_generation")
+
+
+def _write_index_meta(generation: int, committed: int) -> None:
+    _save_json(INDEX_META_PATH, {"embed_model": _settings.embed_model,
+                                 "generation": generation,
+                                 "committed_generation": committed})
 ACL_SIDECAR_PATH = Path("data/acl.json")   # {source_file: {roles: [...], sites: [...]}}
 # {source_file: {version, effective_date, status: active|superseded, supersedes: [...]}}
 VERSIONS_SIDECAR_PATH = Path("data/versions.json")
@@ -65,7 +114,8 @@ def _version_for(source_file: str, versions_map: dict) -> dict:
 __all__ = ["Chunk", "build_chunks", "run_ingestion", "_split_into_sections",
            "_windowed_chunks", "chunk_content_hash", "chunk_index_hash",
            "diff_manifest", "point_id_for", "ensure_payload_indexes",
-           "ACL_INDEXED_KEYS"]
+           "ACL_INDEXED_KEYS", "index_generation", "committed_generation",
+           "count_tokens", "chunk_token_budget", "oversize_units"]
 
 
 # ---------- data model ----------
@@ -87,29 +137,141 @@ class Chunk:
 
 # ---------- chunking helpers ----------
 
-def _windowed_chunks(text: str, target: int = 600, overlap: int = 100) -> list[str]:
-    """Word-windowed chunking. Production would use a tokenizer; words suffice here."""
-    words = text.split()
-    if len(words) <= target:
+_WORD_RE = re.compile(r"\S+")
+_SPECIAL_TOKENS = 2        # [CLS] / [SEP] around every embedded sequence
+
+
+@lru_cache(maxsize=4)
+def _hf_tokenizer(model_name: str):
+    from transformers import AutoTokenizer
+    return AutoTokenizer.from_pretrained(model_name)
+
+
+def count_tokens(text: str, model_name: str | None = None) -> int:
+    """Token count under the EMBEDDING model's own tokenizer.
+
+    The same model the chunks are embedded with, so this is the measurement
+    that decides what gets truncated. Loaded lazily, and never reached for
+    text that is already short enough (see `_fits_on_size_alone`).
+    """
+    tok = _hf_tokenizer(model_name or _settings.embed_model)
+    # verbose=False: measuring an over-long text is the point here, and the
+    # tokenizer's "longer than the maximum sequence length" warning would fire
+    # on exactly the chunks this function exists to catch.
+    return len(tok.encode(text, add_special_tokens=False, verbose=False))
+
+
+def _default_counter(text: str) -> int:
+    """The real tokenizer, resolved at call time so tests can inject instead."""
+    return count_tokens(text)
+
+
+def _fits_on_size_alone(text: str, max_tokens: int) -> bool:
+    """True when the byte length alone proves the text fits.
+
+    No tokenizer emits more than one token per UTF-8 byte: WordPiece works on
+    characters, byte-level BPE on bytes. So this is a sound bound, not an
+    estimate — and it keeps short content off the tokenizer entirely.
+    """
+    return len(text.encode("utf-8")) <= max_tokens
+
+
+def chunk_token_budget(use_contextual: bool, settings=None) -> int:
+    """How many tokens a chunk's raw text may occupy.
+
+    embed_text is the contextual blurb plus the chunk, and the blurb runs to
+    ~120 tokens, so when augmentation is on its share has to come out of the
+    window — otherwise every full chunk silently loses its tail.
+    """
+    s = settings or _settings
+    budget = s.chunk_max_tokens - _SPECIAL_TOKENS
+    if use_contextual:
+        budget -= s.chunk_context_reserve_tokens
+    return max(budget, 1)
+
+
+def _windowed_chunks(text: str, *, max_tokens: int | None = None,
+                     overlap_tokens: int | None = None,
+                     count_tokens=None) -> list[str]:
+    """Token-windowed chunking, cut on word boundaries.
+
+    Sized in tokens because that is what the embedder truncates on: a 600-word
+    window measured 743 tokens on this corpus and lost 31% of every full chunk,
+    invisibly — the text was still stored and still shown to the LLM, so only
+    dense recall degraded, on the tail.
+
+    Every window is a slice of the original string, so the chunk text stays
+    byte-identical to the source (joining on single spaces would rewrite the
+    newlines and tabs that carry meaning inside tables and code blocks).
+    """
+    counter = count_tokens or _default_counter
+    limit = chunk_token_budget(False) if max_tokens is None else max_tokens
+    overlap = (_settings.chunk_overlap_tokens if overlap_tokens is None
+               else overlap_tokens)
+
+    spans = [(m.start(), m.end()) for m in _WORD_RE.finditer(text)]
+    if not spans:
+        return [text] if text.strip() else []
+    if _fits_on_size_alone(text, limit) or counter(text) <= limit:
         return [text]
+
+    costs = [counter(text[a:b]) for a, b in spans]
     out: list[str] = []
-    step = target - overlap
-    for start in range(0, len(words), step):
-        out.append(" ".join(words[start : start + target]))
-        if start + target >= len(words):
+    start, n = 0, len(spans)
+    while start < n:
+        total, end = 0, start
+        while end < n and (end == start or total + costs[end] <= limit):
+            total += costs[end]
+            end += 1
+        # per-word costs can under-count a joined window (byte-level BPE merges
+        # across the space), so confirm the real window before emitting it
+        while end - start > 1 and counter(text[spans[start][0]:spans[end - 1][1]]) > limit:
+            end -= 1
+        out.append(text[spans[start][0]:spans[end - 1][1]])
+        if end >= n:
             break
+        back, i = 0, end
+        while i > start + 1 and back + costs[i - 1] <= overlap:
+            back += costs[i - 1]
+            i -= 1
+        start = max(i, start + 1)      # always make progress
     return out
 
 
-def _element_units(el) -> list[tuple[str, str, int | None]]:
+def _element_units(el, *, max_tokens: int | None = None,
+                   overlap_tokens: int | None = None,
+                   count_tokens=None) -> list[tuple[str, str, int | None]]:
     """Turn one parsed element into (chunk_text, element_type, page) units."""
     if isinstance(el, TextElement):
-        return [(w, "text", el.page) for w in _windowed_chunks(el.text)]
+        windows = _windowed_chunks(el.text, max_tokens=max_tokens,
+                                   overlap_tokens=overlap_tokens,
+                                   count_tokens=count_tokens)
+        return [(w, "text", el.page) for w in windows]
     if isinstance(el, TableElement):
         return [(el.markdown, "table", el.page)]           # atomic — never split
     if isinstance(el, FigureElement):
         return [(el.caption, "figure", el.page)] if el.caption.strip() else []
     return []
+
+
+def oversize_units(units: list[tuple[str, str, int | None]], *, max_tokens: int,
+                   count_tokens=None) -> list[dict]:
+    """The units that still do not fit the embedding window.
+
+    Tables are atomic and a single long token-dense run cannot be split, so some
+    content genuinely cannot be made to fit. The embedder would truncate it in
+    silence and only dense recall would suffer, so it is reported at ingest.
+    """
+    counter = count_tokens or _default_counter
+    over: list[dict] = []
+    for raw, element_type, page in units:
+        if _fits_on_size_alone(raw, max_tokens):
+            continue
+        n = counter(raw)
+        if n > max_tokens:
+            over.append({"element_type": element_type, "page": page,
+                         "tokens": n, "preview": raw[:60].replace("\n", " ")})
+    return over
 
 
 def _doc_text(parsed: ParsedDocument) -> str:
@@ -243,9 +405,12 @@ def _save_json(path: Path, obj) -> None:
 def build_chunks(docs_dir: Path, use_contextual: bool = True,
                  context_cache: dict[str, str] | None = None,
                  dispatcher: Dispatcher | None = None,
-                 force_cloud: bool = False) -> list[Chunk]:
+                 force_cloud: bool = False, count_tokens=None,
+                 max_tokens: int | None = None) -> list[Chunk]:
     context_cache = context_cache if context_cache is not None else {}
     dispatcher = dispatcher or Dispatcher()
+    budget = chunk_token_budget(use_contextual) if max_tokens is None else max_tokens
+    oversize: list[dict] = []
     acl_map = _load_json(ACL_SIDECAR_PATH, {})
     versions_map = _load_json(VERSIONS_SIDECAR_PATH, {})
     files = sorted(p for p in docs_dir.iterdir()
@@ -259,7 +424,13 @@ def build_chunks(docs_dir: Path, use_contextual: bool = True,
         doc_text = _doc_text(parsed)
         doc_id = _hash_id(path.name)
         for el in parsed.elements:
-            for raw, element_type, page in _element_units(el):
+            units = _element_units(el, max_tokens=budget,
+                                   count_tokens=count_tokens)
+            for over in oversize_units(units, max_tokens=budget,
+                                       count_tokens=count_tokens):
+                oversize.append({**over, "source_file": path.name,
+                                 "section": el.section})
+            for raw, element_type, page in units:
                 ctx = ""
                 if use_contextual:
                     key = chunk_content_hash(parsed.title, el.section, raw)
@@ -280,7 +451,21 @@ def build_chunks(docs_dir: Path, use_contextual: bool = True,
                               **_acl_for(path.name, acl_map),
                               **_version_for(path.name, versions_map)},
                 ))
+    _report_oversize(oversize, budget)
     return chunks
+
+
+def _report_oversize(oversize: list[dict], budget: int) -> None:
+    """Say what will be truncated. Silence here is how the 31% loss went unseen."""
+    if not oversize:
+        return
+    print(f"[ingest] WARNING: {len(oversize)} chunk(s) exceed the {budget}-token "
+          "embedding window and will be truncated by the embedder — dense recall "
+          "degrades for these (BM25 still indexes the full text):")
+    for item in oversize:
+        page = f", p{item['page']}" if item.get("page") is not None else ""
+        print(f"           {item['source_file']} > {item['section']} "
+              f"({item['element_type']}{page}): {item['tokens']} tokens")
 
 
 # ---------- indexing ----------
@@ -352,11 +537,19 @@ def run_ingestion(docs_dir: Path = Path("data/docs"), use_contextual: bool = Tru
     from sentence_transformers import SentenceTransformer
     embedder = SentenceTransformer(_settings.embed_model)
 
+    # Claim the next generation BEFORE Qdrant changes. Qdrant is updated as we
+    # go while chunks.json is rewritten only at the end, so for the whole run a
+    # serving process holds ACL labels and document statuses the index has
+    # already moved past. The claim is what lets it notice.
+    generation = index_generation() + 1
+    _write_index_meta(generation, committed_generation())
+
     index_qdrant_incremental(chunks, embedder, to_upsert=to_upsert,
                              stale_ids=stale, rebuild=rebuild)
 
     _save_json(CHUNK_STORE_PATH, [c.to_dict() for c in chunks])
     _save_json(MANIFEST_PATH, current_manifest)
     _save_json(CONTEXT_CACHE_PATH, context_cache)
-    _save_json(INDEX_META_PATH, {"embed_model": _settings.embed_model})
-    print("[ingest] done.")
+    # Only now does the snapshot on disk match the claimed generation.
+    _write_index_meta(generation, generation)
+    print(f"[ingest] done (generation {generation}).")

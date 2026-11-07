@@ -113,7 +113,10 @@ async def test_semantic_cache_serves_second_identical_query():
     assert provider.calls == 1             # LLM not called again
 
 
-async def test_cache_skipped_when_acl_on():
+async def test_cache_is_partitioned_by_visibility_not_skipped_under_acl():
+    """Skipping it whenever a principal was present meant a 0% hit rate in
+    exactly the deployments that enforce ACLs. Same grants reuse the answer;
+    different grants never do. Scope details live in test_cache_scope.py."""
     from src.access import AccessContext
     from src.cache import SemanticCache
 
@@ -127,9 +130,13 @@ async def test_cache_skipped_when_acl_on():
     orch = Orchestrator(retr, settings=Settings(_env_file=None, agent_mode="agent",
                                                 enable_semantic_cache=True),
                         provider=provider, cache=cache)
-    await orch.run("q", access=AccessContext(roles=frozenset({"tech"})))
-    await orch.run("q", access=AccessContext(roles=frozenset({"tech"})))
-    assert provider.calls == 2  # no cache reuse under ACL
+    tech = AccessContext(roles=frozenset({"tech"}))
+    await orch.run("q", access=tech)
+    await orch.run("q", access=tech)
+    assert provider.calls == 1                      # reused within the scope
+
+    await orch.run("q", access=AccessContext(roles=frozenset({"ops"})))
+    assert provider.calls == 2                      # never across scopes
 
 
 async def test_no_session_id_does_not_store():

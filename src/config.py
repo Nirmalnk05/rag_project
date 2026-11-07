@@ -42,6 +42,13 @@ class Settings(BaseSettings):
     context_aug_model: str = "claude-haiku-4-5-20251001"
     grader_model: str = "claude-haiku-4-5-20251001"
 
+    # Chunking (sized in tokens: bge-small takes 512 and truncates the rest in
+    # silence, and measured tokens-per-word spans 1.23 prose -> 5.21 CJK, so no
+    # word target fits all content)
+    chunk_max_tokens: int = 512            # the embedding model's hard window
+    chunk_overlap_tokens: int = 64
+    chunk_context_reserve_tokens: int = 128  # room for the contextual blurb
+
     # Retrieval
     top_k_dense: int = 20
     top_k_sparse: int = 20
@@ -78,6 +85,11 @@ class Settings(BaseSettings):
 
     # Document freshness / versioning
     retrieve_superseded: bool = False      # False = superseded revisions are hidden
+
+    # Index reload: how often a serving process checks index_meta.json for a
+    # newer committed generation and rebuilds chunks.json + BM25 off the
+    # request path. 0 disables it (the snapshot then lives until a restart).
+    index_reload_poll_s: int = 60
 
     # Answer safety + faithfulness
     enable_safety_escalation: bool = True  # prepend safety notices for high-risk topics

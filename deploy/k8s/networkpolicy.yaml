@@ -1,0 +1,87 @@
+# What makes the ACL trust boundary real.
+#
+# X-User-Id / X-Roles / X-Sites are caller-supplied, so ENABLE_ACL=true requires
+# TRUST_IDENTITY_HEADERS=true, which asserts that a gateway authenticates the
+# user and rebuilds those headers from verified claims. That assertion only
+# holds if nothing else can reach the app: otherwise any workload with cluster
+# network access sends `X-Roles: admin` and reads every document.
+#
+# Label the namespace your ingress controller / API gateway runs in:
+#   kubectl label namespace <gateway-ns> rag-gateway=true
+# Nothing reaches port 8000 without that label.
+#
+# Only Ingress is restricted here. Egress is left open because the app calls out
+# to the LLM provider (and DNS); add an egress policy of your own if your cluster
+# requires one.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+spec:
+  # every pod in the namespace, including qdrant and redis
+  podSelector: {}
+  policyTypes: [Ingress]
+  # no ingress rules at all = deny
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-gateway-to-app
+spec:
+  podSelector:
+    matchLabels: { app: rag-app }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { rag-gateway: "true" }
+      ports:
+        - { protocol: TCP, port: 8000 }
+---
+# Default-deny covers the backends too, so the app needs an explicit way in or
+# every request fails closed.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-app-to-qdrant
+spec:
+  podSelector:
+    matchLabels: { app: qdrant }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app: rag-app }
+      ports:
+        - { protocol: TCP, port: 6333 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-app-to-redis
+spec:
+  podSelector:
+    matchLabels: { app: redis }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app: rag-app }
+      ports:
+        - { protocol: TCP, port: 6379 }
+---
+# Scrape /metrics without opening the app to the rest of the cluster.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-monitoring-to-app
+spec:
+  podSelector:
+    matchLabels: { app: rag-app }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { rag-monitoring: "true" }
+      ports:
+        - { protocol: TCP, port: 8000 }

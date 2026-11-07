@@ -217,7 +217,13 @@ full bypass. Startup also refuses a `data/acl.json` while `ENABLE_ACL` is false,
 since the ACLs would be silently inert. Editing `data/acl.json` and re-running
 `scripts/ingest.py` re-upserts the affected chunks: the ingest manifest is keyed
 on content *plus* ACL/version metadata, so an ACL-only change still reaches the
-Qdrant payload.
+Qdrant payload — and because `chunks.json` is only a startup snapshot, a running
+process re-resolves metadata from the index while it is behind the current
+generation, so the revocation does not wait for a restart (see
+`INDEX_RELOAD_POLL_S` below). In Kubernetes,
+[deploy/k8s/networkpolicy.yaml](deploy/k8s/networkpolicy.yaml) is what makes the
+`TRUST_IDENTITY_HEADERS` assertion true: default-deny ingress, with only the
+namespace labelled `rag-gateway=true` allowed to reach port 8000.
 
 **CMMS / system-of-record tool.** With `ENABLE_CMMS=true`, the agent gets a
 `query_cmms` tool for live asset status and open work orders — the data that lives
@@ -236,9 +242,15 @@ keys needed; full RAGAS scoring remains a separate key-requiring run.
 **Semantic answer cache.** With `ENABLE_SEMANTIC_CACHE=true`, a repeated or
 near-identical question (cosine ≥ `SEMANTIC_CACHE_THRESHOLD` on the query
 embedding) is served from cache without re-running the LLM — the response carries
-`cached: true`. Deliberately skipped when ACLs are on (answers differ per
-principal), when there's conversation history, or when filters are applied, to
-avoid serving a wrong answer ([src/cache.py](src/cache.py)).
+`cached: true`. It is *partitioned*, not skipped, under ACLs: the key is the
+principal's visibility (sorted roles + sites — what `acl_visible` actually
+decides on, not the user id) plus the index generation. So two users with the
+same grants share an answer, different visibility never does, and an ingest
+invalidates every scope, because a cached answer must not outlive the documents
+it cited. The scope is matched *before* the nearest-neighbour search, so an entry
+from another scope cannot win and shadow a permitted one. Still skipped when
+there's conversation history or filters are applied
+([src/cache.py](src/cache.py)).
 
 **Guardrails backend.** Input screening is pluggable via `GUARDRAILS_BACKEND`:
 `heuristic` (default regex injection screen) or `external` — register a real
@@ -294,6 +306,28 @@ rebuilds from it in memory at startup); contextual blurbs and figure captions ar
 cached by content hash, so an interrupted run resumes without repaying LLM/vision
 calls. Flags: `--rebuild` (drop + re-ingest), `--no-contextual` (skip
 augmentation), `--force-cloud` (route all PDF/Word to the cloud parser).
+
+Chunks are sized in **tokens**, not words: `bge-small` takes 512 and truncates
+the rest in silence, and measured tokens-per-word on this corpus spans 1.23
+(prose) to 5.21 (CJK), so no word target fits — the old 600-word window measured
+743 tokens and lost 31% of every full chunk, visible only as degraded dense
+recall on the tail. Windows are measured with the embedding model's own
+tokenizer, cut on word boundaries, and sliced from the source so the chunk text
+stays byte-identical; content that still cannot fit (an atomic table, say) is
+reported at the end of the run instead of being truncated quietly
+(`CHUNK_MAX_TOKENS`, `CHUNK_CONTEXT_RESERVE_TOKENS`).
+
+`chunks.json` is a **startup snapshot**, so ingestion claims a generation in
+`data/index_meta.json` *before* it touches Qdrant and commits it only after the
+sidecars are written. While a serving process is behind that generation, the
+sparse leg re-resolves each candidate's metadata from Qdrant and drops chunks the
+index no longer holds — so a revocation or a deletion applies at once rather than
+at the next restart. `INDEX_RELOAD_POLL_S` then rebuilds the chunk store and BM25
+off the request path and swaps them as one reference (BM25 returns positions into
+the list it was built from, so a half-swapped pair would resolve them against the
+wrong documents). That reload is what makes newly ingested documents
+keyword-searchable; it holds both corpora while it runs, so peak RAM is ~2x the
+chunk store.
 
 Retrieval can filter by `element_type` (`text`/`table`/`figure`), `page`,
 `source_file`, `doc_title`, or `section` via the `filters` field on `/ask`.

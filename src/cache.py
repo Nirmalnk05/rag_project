@@ -1,9 +1,11 @@
 """Semantic answer cache: reuse a prior answer when a new query is close enough.
 
-Keyed on the query embedding (cosine similarity ≥ threshold). Bounded FIFO. Used
-only when ACLs are off (otherwise different principals could share answers). The
-embedding vector is supplied by the caller (Retriever.embed_query) so this module
-stays model-free and unit-testable.
+Keyed on the query embedding (cosine similarity ≥ threshold) *within a scope*:
+the principal's visibility plus the index generation. It is partitioned, not
+skipped — bypassing it whenever a principal was present meant a 0% hit rate in
+exactly the deployments that enforce ACLs. Bounded FIFO. The embedding vector is
+supplied by the caller (Retriever.embed_query) so this module stays model-free
+and unit-testable.
 """
 from __future__ import annotations
 
@@ -12,6 +14,23 @@ from collections import deque
 import numpy as np
 
 from src.config import Settings, get_settings
+
+
+def cache_scope(access, generation: int) -> str:
+    """The visibility an answer was produced under, plus the index generation.
+
+    Sorted roles and sites — not the user id: those are what `acl_visible`
+    decides on, so two users with the same grants may share an answer while
+    different visibility never does. The generation means an ingest invalidates
+    every scope, so a cached answer cannot outlive the documents it cited.
+    """
+    if access is None:
+        return f"g{generation}|acl=off"
+    if getattr(access, "is_admin", False):
+        return f"g{generation}|admin"
+    roles = ",".join(sorted(access.roles))
+    sites = ",".join(sorted(access.sites))
+    return f"g{generation}|roles={roles}|sites={sites}"
 
 
 def _cosine(a: np.ndarray, b: np.ndarray) -> float:
@@ -30,12 +49,20 @@ class SemanticCache:
     def enabled(self) -> bool:
         return self._s.enable_semantic_cache
 
-    def get(self, query_vec) -> dict | None:
+    def get(self, query_vec, *, scope: str) -> dict | None:
+        """Nearest neighbour *within this scope*.
+
+        The scope is checked BEFORE the similarity search on purpose: filtering
+        after it lets an entry from another scope win and shadow a permitted
+        one that would have matched.
+        """
         if not self.enabled or not self._entries:
             return None
         v = np.asarray(query_vec, dtype=float)
         best, best_sim = None, -1.0
-        for vec, entry in self._entries:
+        for entry_scope, vec, entry in self._entries:
+            if entry_scope != scope:
+                continue
             sim = _cosine(v, vec)
             if sim > best_sim:
                 best, best_sim = entry, sim
@@ -43,10 +70,10 @@ class SemanticCache:
             return best
         return None
 
-    def put(self, query_vec, entry: dict) -> None:
+    def put(self, query_vec, entry: dict, *, scope: str) -> None:
         if not self.enabled:
             return
-        self._entries.append((np.asarray(query_vec, dtype=float), entry))
+        self._entries.append((scope, np.asarray(query_vec, dtype=float), entry))
 
     def clear(self) -> None:
         self._entries.clear()
