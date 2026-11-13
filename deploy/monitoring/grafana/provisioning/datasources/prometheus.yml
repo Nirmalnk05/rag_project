@@ -1,0 +1,12 @@
+# The dashboard references this datasource by uid, so the uid is fixed here
+# rather than generated — a provisioned dashboard with a dangling datasource
+# uid renders every panel as "Datasource not found".
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: rag-prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false

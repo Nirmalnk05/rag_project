@@ -1,0 +1,51 @@
+# Alert rules over the four metrics the app actually exposes.
+#
+# There is no Alertmanager in this profile, so a firing rule shows up in the
+# Prometheus UI (Alerts) and in Grafana, and notifies nobody. Point Prometheus
+# at an Alertmanager before relying on these in production.
+#
+# Thresholds are starting points, not measurements: tune them once you have a
+# week of real traffic.
+groups:
+  - name: rag-app
+    rules:
+      # `status` only held "ok" until the instrumentation fix, which made the
+      # error rate unobservable — this is the rule that gap was hiding.
+      - alert: RagHighErrorRate
+        expr: |
+          sum(rate(rag_requests_total{status="error"}[5m]))
+            / clamp_min(sum(rate(rag_requests_total[5m])), 1e-9) > 0.05
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "Over 5% of RAG requests are failing"
+          description: "Error ratio {{ $value | humanizePercentage }} over 5m."
+
+      # The summary carries count and sum only — no buckets, no quantiles — so
+      # this is the mean, not p95. histogram_quantile() would return nothing.
+      - alert: RagSlowAnswers
+        expr: |
+          sum(rate(rag_answer_latency_seconds_sum[10m]))
+            / clamp_min(sum(rate(rag_answer_latency_seconds_count[10m])), 1e-9) > 15
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Mean answer latency above 15s"
+          description: "Mean {{ $value | printf \"%.1f\" }}s over 10m (count+sum summary, not a quantile)."
+
+      # Retrieval degrading to injection-screened rejections, or someone probing.
+      - alert: RagGuardrailRejectionSpike
+        expr: sum(rate(rag_requests_total{status="rejected"}[15m])) > 0.2
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "Sustained guardrail rejections"
+          description: "{{ $value | printf \"%.2f\" }} rejected requests/s over 15m."
+
+      - alert: RagTargetDown
+        expr: up{job="rag-app"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "The RAG app is not being scraped"
+          description: "Either the pod is down or /metrics is unreachable (NetworkPolicy: label the monitoring namespace rag-monitoring=true)."

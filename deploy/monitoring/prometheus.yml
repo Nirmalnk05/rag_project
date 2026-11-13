@@ -1,0 +1,28 @@
+# Scrape config for the RAG app's /metrics endpoint.
+#
+# src/metrics.py exposes counters and a count+sum summary in Prometheus text
+# format, but nothing was ever scraping it. This is the scraper.
+#
+# The metrics live in the serving process's memory, so every replica holds its
+# own counters and each one has to be scraped separately — which is why the
+# queries in the Grafana dashboard aggregate with sum(). A restart resets them
+# to zero; rate() and increase() handle that, instantaneous values do not.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/rules.yml
+
+scrape_configs:
+  # compose resolves `app` on the default network; outside compose, point this
+  # at the gateway or use kubernetes_sd_config (see deploy/k8s/app-deployment.yaml).
+  - job_name: rag-app
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["app:8000"]
+        labels: { service: rag }
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

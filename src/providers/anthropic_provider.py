@@ -60,10 +60,12 @@ class AnthropicProvider(LLMProvider):
 
     @staticmethod
     def _kwargs(prompt, system, model, max_tokens, temperature) -> dict:
+        # `temperature` is accepted for interface parity but never sent: Claude
+        # 5-family models reject sampling params with a 400, and the API is
+        # removing them on every model.
         kw: dict = {
             "model": model,
             "max_tokens": max_tokens,
-            "temperature": temperature,
             "messages": [{"role": "user", "content": prompt}],
         }
         if system:
@@ -128,8 +130,7 @@ class AnthropicProvider(LLMProvider):
 
     async def chat(self, messages, *, tools=None, model, max_tokens=1024, temperature=0.0) -> ChatResult:
         system, native = _to_anthropic_messages(messages)
-        kw: dict = {"model": model, "max_tokens": max_tokens,
-                    "temperature": temperature, "messages": native}
+        kw: dict = {"model": model, "max_tokens": max_tokens, "messages": native}
         if system:
             kw["system"] = system
         if tools:

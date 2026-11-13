@@ -126,9 +126,10 @@ curl -N -X POST http://localhost:8000/ask/stream \
 | `.gitignore` | Excludes venvs, caches, and generated data artifacts from git. |
 | `.dockerignore` | Excludes dev-only files from the Docker build context. |
 | `Dockerfile` | Multi-stage build for the app image; optional `PREFETCH_MODELS` arg bakes model weights in for offline use. |
-| `docker-compose.yml` | Qdrant + app services, plus an optional `local-llm` profile that adds an Ollama container. |
+| `docker-compose.yml` | Qdrant + app services, plus two optional profiles: `local-llm` (Ollama container) and `monitoring` (Prometheus + Grafana, both bound to localhost). |
 | `docker-compose.offline.yml` | Qdrant + Ollama + app wired for zero-internet-egress deployment. |
 | `.github/workflows/ci.yml` | GitHub Actions: installs deps and runs the test suite on every push/PR. |
+| `deploy/monitoring/` | The `monitoring` profile's config: Prometheus scrape job + alert rules, and Grafana's provisioned datasource and **RAG overview** dashboard. |
 
 ### `src/` — core application
 
@@ -244,6 +245,8 @@ curl -N -X POST http://localhost:8000/ask/stream \
 | `test_feedback.py` | Feedback recording and summary tallies. |
 | `test_retrieval_quality.py` | The CI recall@k regression gate. |
 | `test_metrics.py` | Prometheus counter/histogram text rendering. |
+| `test_metrics_instrumentation.py` | That every answer path is counted — including `/ask/stream`, the one the chat UI uses — and that failures and guardrail rejections get their own `status` label. |
+| `test_monitoring_config.py` | That the Prometheus rules and Grafana panels only query series `src/metrics.py` actually emits, parsed with the real Prometheus client as the oracle. |
 | `test_api.py` | The API in pipeline mode (health/ready/feedback/metrics/session endpoints). |
 | `test_prompts.py` | The versioned prompt registry. |
 | `test_ingestion_unit.py` | Chunk hashing, manifest diffing, point IDs, and the embed-model-change guard. |

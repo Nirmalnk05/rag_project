@@ -10,6 +10,20 @@ spec:
   template:
     metadata:
       labels: { app: rag-app }
+      annotations:
+        # The counters live in each replica's memory, so every pod has to be
+        # scraped separately and the queries aggregate with sum() -- see
+        # deploy/monitoring/grafana/dashboards/rag-overview.json.
+        #
+        # These annotations are read by a plain Prometheus using
+        # kubernetes_sd_config with the usual annotation relabeling. The
+        # prometheus-operator ignores them: there, create a ServiceMonitor for
+        # the rag-app Service instead. Either way the scraper's namespace needs
+        # `kubectl label namespace <ns> rag-monitoring=true`, or default-deny
+        # drops the scrape (deploy/k8s/networkpolicy.yaml).
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /metrics
+        prometheus.io/port: "8000"
     spec:
       containers:
         - name: rag-app

@@ -5,8 +5,12 @@ __pycache__/
 .pytest_cache/
 ~$*.bkp
 ~$*.drawio
+~$*.dtmp
 # generated artifacts
 data/chunks.json
 data/bm25_index.pkl
 data/ingest_manifest.json
 data/context_cache.json
+# the index generation counter: per-machine serving state, and
+# committing one checkout's value makes every other one look stale
+data/index_meta.json

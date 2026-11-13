@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 import uuid
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
@@ -187,9 +188,34 @@ def feedback_summary() -> dict:
     return get_feedback_store().summary()
 
 
-def _guard(query: str) -> None:
+def _record_answer_metrics(endpoint: str, payload: dict, started: float) -> None:
+    """The counters every answer path shares.
+
+    Both /ask and /ask/stream come through here. Instrumenting only /ask left
+    the chat UI — which posts to /ask/stream — reporting zero requests, zero
+    tool calls and zero latency no matter how much it was used.
+    """
+    from src.metrics import ANSWER_LATENCY, CACHE_HITS, REQUESTS, TOOL_CALLS
+    REQUESTS.inc(endpoint=endpoint, status="ok")
+    ANSWER_LATENCY.observe(time.perf_counter() - started, endpoint=endpoint)
+    if payload.get("cached"):
+        CACHE_HITS.inc()
+    for step in payload.get("steps", []):
+        TOOL_CALLS.inc(tool=step.get("tool", "?"))
+
+
+def _count_outcome(endpoint: str, status: str) -> None:
+    """Record a non-answer outcome. A `status` label that only ever holds "ok"
+    hides the one number worth alerting on."""
+    from src.metrics import REQUESTS
+    REQUESTS.inc(endpoint=endpoint, status=status)
+
+
+def _guard(query: str, endpoint: str) -> None:
     reason = screen_input(query)
     if reason:
+        # a guardrail rejection is a real outcome, not a server failure
+        _count_outcome(endpoint, "rejected")
         raise HTTPException(status_code=400, detail=f"query rejected: {reason}")
 
 
@@ -204,27 +230,22 @@ def _access_for(request: Request):
 @app.post("/ask", response_model=AskResponse,
           dependencies=[Depends(require_api_key), Depends(rate_limiter)])
 async def ask(req: AskRequest, http_request: Request) -> AskResponse:
-    import time as _time
-
-    from src.metrics import ANSWER_LATENCY, CACHE_HITS, REQUESTS, TOOL_CALLS
-    _guard(req.query)
+    _guard(req.query, "ask")
     settings = get_settings()
     rid = request_id_var.get()
     access = _access_for(http_request)
     trace = get_tracer().trace(name="ask", request_id=rid, input=req.query,
                                session_id=req.session_id)
     tok = set_current_trace(trace)
-    _t0 = _time.perf_counter()
+    started = time.perf_counter()
     try:
         out = await app.state.orchestrator.run(req.query, req.filters, req.session_id, access)
+    except Exception:
+        _count_outcome("ask", "error")
+        raise
     finally:
         reset_current_trace(tok)
-    REQUESTS.inc(endpoint="ask", status="ok")
-    ANSWER_LATENCY.observe(_time.perf_counter() - _t0)
-    if out.get("cached"):
-        CACHE_HITS.inc()
-    for step in out.get("steps", []):
-        TOOL_CALLS.inc(tool=step.get("tool", "?"))
+    _record_answer_metrics("ask", out, started)
     answer = out.get("answer", "")
     if settings.redact_pii_in_answers:
         answer, _found = redact_pii(answer)
@@ -246,7 +267,7 @@ async def ask(req: AskRequest, http_request: Request) -> AskResponse:
 @app.post("/ask/stream",
           dependencies=[Depends(require_api_key), Depends(rate_limiter)])
 async def ask_stream(req: AskRequest, http_request: Request) -> StreamingResponse:
-    _guard(req.query)
+    _guard(req.query, "ask_stream")
     rid = request_id_var.get()
     access = _access_for(http_request)
 
@@ -254,13 +275,21 @@ async def ask_stream(req: AskRequest, http_request: Request) -> StreamingRespons
         trace = get_tracer().trace(name="ask_stream", request_id=rid, input=req.query,
                                    session_id=req.session_id)
         tok = set_current_trace(trace)
+        started = time.perf_counter()
+        counted = False
         try:
             async for evt in app.state.orchestrator.stream(req.query, req.filters,
                                                            req.session_id, access):
                 if evt.get("type") == "final":
                     evt["request_id"] = rid
+                    _record_answer_metrics("ask_stream", evt, started)
+                    counted = True
                 yield f"data: {json.dumps(evt)}\n\n"
         except Exception as e:  # noqa: BLE001 — stream must report, not vanish
+            # the error is delivered as an SSE event with HTTP 200 already sent,
+            # so the status cannot be inferred from the response code
+            if not counted:
+                _count_outcome("ask_stream", "error")
             _logger.exception("stream_failed")
             yield f"data: {json.dumps({'type': 'error', 'message': str(e), 'request_id': rid})}\n\n"
         finally:

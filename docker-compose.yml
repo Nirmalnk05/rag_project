@@ -36,6 +36,66 @@ services:
     volumes:
       - ollama_models:/root/.ollama
 
+  # Observability. Enable with:  docker compose --profile monitoring up -d
+  # Prometheus scrapes the app's /metrics (which nothing was collecting before)
+  # and Grafana serves deploy/monitoring/grafana/dashboards/rag-overview.json.
+  #
+  # Both are bound to 127.0.0.1 on purpose: /metrics is unauthenticated, and so
+  # is the Grafana instance below, so neither should be reachable from the LAN.
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    container_name: rag-prometheus
+    profiles: ["monitoring"]
+    ports:
+      - "127.0.0.1:9090:9090"
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-lifecycle
+    volumes:
+      - ./deploy/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/monitoring/rules.yml:/etc/prometheus/rules.yml:ro
+      - prometheus_data:/prometheus
+    depends_on:
+      - app
+
+  grafana:
+    image: grafana/grafana:11.5.2
+    container_name: rag-grafana
+    profiles: ["monitoring"]
+    ports:
+      # 3000 is also self-hosted Langfuse's default port; change the host side
+      # here if you run both on this machine.
+      - "127.0.0.1:3000:3000"
+    environment:
+      # read-only, no login: the dashboard is provisioned from a file, so there
+      # is nothing to create by hand. Editing still needs the admin account.
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_ANALYTICS_REPORTING_ENABLED=false
+      - GF_ANALYTICS_CHECK_FOR_UPDATES=false
+      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/rag-overview.json
+      # Not optional. Without WAL, provisioning races the startup migrations on
+      # the SQLite database and loses: `failed to save dashboard ... database is
+      # locked`, observed on a first boot of 11.5.2. The file provisioner then
+      # only retries when the file's mtime changes, so Grafana comes up with no
+      # dashboard at all and stays that way across restarts.
+      - GF_DATABASE_WAL=true
+    volumes:
+      # Mount the two directories we actually provide, not the whole
+      # provisioning tree: a read-only bind over /etc/grafana/provisioning hides
+      # the image's own plugins/ and alerting/ directories, and Grafana logs an
+      # error for each missing one on every boot.
+      - ./deploy/monitoring/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./deploy/monitoring/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./deploy/monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+
 volumes:
   qdrant_data:
   ollama_models:
+  prometheus_data:
+  grafana_data:

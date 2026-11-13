@@ -348,7 +348,27 @@ Structured JSON logs carry a `request_id` (propagated from an inbound
 `X-Request-ID` or generated) on every line and in every response. Set
 `LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY` to emit one trace per request with
 spans for rewrite/retrieve/grade/generate incl. model + token usage; without
-keys it is a zero-overhead no-op.
+keys it is a zero-overhead no-op. The import is lazy, so the keys need
+`langfuse` actually installed (`requirements.txt` pins it) or the first traced
+request raises.
+
+`/metrics` exposes request counts by endpoint and outcome, semantic-cache hits,
+agent tool calls and answer latency in Prometheus text format. An endpoint is
+not a monitoring stack, so the repo ships one:
+
+```bash
+docker compose --profile monitoring up -d   # Prometheus :9090, Grafana :3000
+```
+
+Grafana auto-loads **RAG overview** (`deploy/monitoring/`) with error ratio,
+latency, cache-hit ratio, guardrail rejections, tool mix and scrape health; both
+ports bind to `127.0.0.1` because `/metrics` and the Grafana instance are
+unauthenticated. Latency is exposed as a count+sum summary, so the panels chart
+a **mean** — there are no buckets, and `histogram_quantile()` over it silently
+returns nothing. `deploy/monitoring/rules.yml` holds four alerts; wire an
+Alertmanager if you want them to reach anyone. On Kubernetes the pods carry
+`prometheus.io/*` scrape annotations, and the scraper's namespace needs
+`kubectl label namespace <ns> rag-monitoring=true` to get past default-deny.
 
 ## Tests
 

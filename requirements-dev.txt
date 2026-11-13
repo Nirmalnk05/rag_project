@@ -2,3 +2,7 @@ pytest==8.3.3
 pytest-asyncio==0.24.0
 httpx==0.27.2
 pyyaml==6.0.2
+# Test-only. src/metrics.py hand-rolls the Prometheus text format to stay
+# dependency-free at runtime, so the tests use the real parser as the oracle:
+# it is the only way to know a scraper will accept what /metrics emits.
+prometheus-client==0.22.1

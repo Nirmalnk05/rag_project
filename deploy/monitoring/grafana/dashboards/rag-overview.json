@@ -1,0 +1,332 @@
+{
+  "uid": "rag-overview",
+  "title": "RAG overview",
+  "description": "The four metrics src/metrics.py exposes. Latency is a count+sum summary, so every latency panel here is a MEAN, not a quantile: histogram_quantile() has no buckets to work with and returns nothing.",
+  "tags": ["rag"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "editable": true,
+  "graphTooltip": 1,
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "endpoint",
+        "label": "Endpoint",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "rag-prometheus" },
+        "query": "label_values(rag_requests_total, endpoint)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": { "selected": true, "text": ["All"], "value": ["$__all"] }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Error ratio (5m)",
+      "description": "status=\"error\" over all outcomes. Flat zero before the instrumentation fix, because the status label only ever held \"ok\".",
+      "datasource": { "type": "prometheus", "uid": "rag-prometheus" },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 0.01 },
+              { "color": "red", "value": 0.05 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "textMode": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "rag-prometheus" },
+          "editorMode": "code",
+          "expr": "sum(rate(rag_requests_total{status=\"error\"}[5m])) / clamp_min(sum(rate(rag_requests_total[5m])), 1e-9)",
+          "legendFormat": "error ratio"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Mean answer latency (5m)",
+      "description": "rate(_sum)/rate(_count). A mean, not p95 - the exposition has no buckets.",
+      "datasource": { "type": "prometheus", "uid": "rag-prometheus" },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 8 },
+              { "color": "red", "value": 15 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "textMode": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "rag-prometheus" },
+          "editorMode": "code",
+          "expr": "sum(rate(rag_answer_latency_seconds_sum[5m])) / clamp_min(sum(rate(rag_answer_latency_seconds_count[5m])), 1e-9)",
+          "legendFormat": "mean"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Cache hit ratio (5m)",
+      "description": "Semantic cache hits over answered requests. The cache is partitioned by visibility scope plus index generation, so a deployment with ACLs on should not sit at zero - it did while the cache was bypassed whenever a principal was present.",
+      "datasource": { "type": "prometheus", "uid": "rag-prometheus" },
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "text", "value": null },
+              { "color": "green", "value": 0.1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "textMode": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "rag-prometheus" },
+          "editorMode": "code",
+          "expr": "sum(rate(rag_cache_hits_total[5m])) / clamp_min(sum(rate(rag_requests_total{status=\"ok\"}[5m])), 1e-9)",
+          "legendFormat": "hit ratio"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Guardrail rejections (15m)",
+      "description": "status=\"rejected\": prompt-injection screening turning a request away. A real outcome, not a server failure, which is why it has its own label value.",
+      "datasource": { "type": "prometheus", "uid": "rag-prometheus" },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "decimals": 3,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 0.2 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "textMode": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "rag-prometheus" },
+          "editorMode": "code",
+          "expr": "sum(rate(rag_requests_total{status=\"rejected\"}[15m]))",
+          "legendFormat": "rejected/s"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Request rate by endpoint and outcome",
+      "description": "ask_stream is what the chat UI posts to. It read a flat zero here until /ask/stream was instrumented.",
+      "datasource": { "type": "prometheus", "uid": "rag-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "stacking": { "mode": "normal", "group": "A" }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byRegexp", "options": ".*error.*" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }]
+          },
+          {
+            "matcher": { "id": "byRegexp", "options": ".*rejected.*" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } }]
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "rag-prometheus" },
+          "editorMode": "code",
+          "expr": "sum by (endpoint, status) (rate(rag_requests_total{endpoint=~\"$endpoint\"}[5m]))",
+          "legendFormat": "{{endpoint}} - {{status}}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Mean answer latency by endpoint",
+      "description": "Per-endpoint rate(_sum)/rate(_count). Gaps mean no requests in the window, not zero latency.",
+      "datasource": { "type": "prometheus", "uid": "rag-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 2,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "rag-prometheus" },
+          "editorMode": "code",
+          "expr": "sum by (endpoint) (rate(rag_answer_latency_seconds_sum{endpoint=~\"$endpoint\"}[5m])) / clamp_min(sum by (endpoint) (rate(rag_answer_latency_seconds_count{endpoint=~\"$endpoint\"}[5m])), 1e-9)",
+          "legendFormat": "{{endpoint}}"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Tool calls by tool",
+      "description": "Which tools the agent actually reaches for. A collapse in search with steady traffic means the retrieval leg is failing quietly.",
+      "datasource": { "type": "prometheus", "uid": "rag-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "bars",
+            "lineWidth": 1,
+            "fillOpacity": 60,
+            "showPoints": "never",
+            "stacking": { "mode": "normal", "group": "A" }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "rag-prometheus" },
+          "editorMode": "code",
+          "expr": "sum by (tool) (rate(rag_tool_calls_total[5m]))",
+          "legendFormat": "{{tool}}"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Scrape health",
+      "description": "up == 0 means the counters are not being collected at all - the failure mode that looks identical to no traffic.",
+      "datasource": { "type": "prometheus", "uid": "rag-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "max": 1,
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 20,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "rag-prometheus" },
+          "editorMode": "code",
+          "expr": "up{job=\"rag-app\"}",
+          "legendFormat": "{{instance}}"
+        }
+      ]
+    }
+  ]
+}
